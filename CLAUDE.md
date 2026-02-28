@@ -127,9 +127,9 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - Dynamic version display from app bundle
 
 ### Not Yet Implemented
-- [ ] Notification history / log view
-- [ ] Homebrew formula
-- [ ] Sparkle or built-in update mechanism
+- [ ] **Notification history / log view** — new tab showing past alerts (thermal, suspicious, battery, bandwidth); needs a lightweight in-memory or on-disk log model, a new NotificationLogView, and integration with existing UNUserNotificationCenter calls
+- [ ] **Homebrew formula** — `brew install --cask sentrybar` distribution; requires a stable .dmg download URL from GitHub Releases
+- [ ] **Auto-update mechanism** — Sparkle framework or built-in update checker; must stay lightweight (battery-conscious)
 
 ---
 
@@ -229,5 +229,9 @@ hdiutil create -volname "SentryBar" \
 ---
 
 ## Known Issues & Technical Debt
-1. **No notification rate limiting** — rapid suspicious connection churn could flood notifications
-2. **System process allowlist is incomplete** — `killProcess()` uses root-owner check as defense-in-depth, but `NetworkConnection.systemProcesses` set could be expanded
+1. **No notification rate limiting** — rapid suspicious connection churn could flood notifications; add cooldown/dedup logic per notification type
+2. **System process allowlist is incomplete** — `killProcess()` uses root-owner check as defense-in-depth, but `NetworkConnection.systemProcesses` set should be expanded
+
+## Release Milestone
+- **First .dmg release** — tag `v0.5.0` on main, let CI archive step produce the DMG artifact, then create a GitHub Release with the .dmg attached
+- CI uses Xcode 16.2 on `macos-14` runner (fixed 2026-02-28: project format 77 requires Xcode 16+)
