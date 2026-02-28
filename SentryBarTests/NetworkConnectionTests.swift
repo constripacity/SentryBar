@@ -61,6 +61,22 @@ final class NetworkConnectionTests: XCTestCase {
         XCTAssertTrue(NetworkConnection.isKnownProcess("kernel_task"))
     }
 
+    func testKnownProcessBrave() {
+        XCTAssertTrue(NetworkConnection.isKnownProcess("Brave Browser"))
+    }
+
+    func testKnownProcessTelegram() {
+        XCTAssertTrue(NetworkConnection.isKnownProcess("Telegram"))
+    }
+
+    func testKnownProcessDocker() {
+        XCTAssertTrue(NetworkConnection.isKnownProcess("Docker"))
+    }
+
+    func testKnownProcessDropbox() {
+        XCTAssertTrue(NetworkConnection.isKnownProcess("Dropbox"))
+    }
+
     func testUnknownProcess() {
         XCTAssertFalse(NetworkConnection.isKnownProcess("evil_backdoor"))
     }
@@ -109,10 +125,55 @@ final class NetworkConnectionTests: XCTestCase {
         XCTAssertTrue(NetworkConnection.systemProcesses.contains("kernel_task"))
         XCTAssertTrue(NetworkConnection.systemProcesses.contains("launchd"))
         XCTAssertTrue(NetworkConnection.systemProcesses.contains("WindowServer"))
+        XCTAssertTrue(NetworkConnection.systemProcesses.contains("rapportd"))
+        XCTAssertTrue(NetworkConnection.systemProcesses.contains("sharingd"))
+        XCTAssertTrue(NetworkConnection.systemProcesses.contains("apsd"))
     }
 
     func testAllSuspiciousPorts() {
         let expected: Set<String> = ["4444", "5555", "6666", "1337", "31337", "8888"]
         XCTAssertEqual(NetworkConnection.suspiciousPorts, expected)
+    }
+
+    // MARK: - serviceLabel
+
+    private func makeConnection(port: String) -> NetworkConnection {
+        NetworkConnection(
+            processName: "Test", pid: 1, remoteAddress: "1.2.3.4",
+            remotePort: port, protocol: "TCP", state: "ESTABLISHED",
+            canKill: true, heuristicSuspicious: false
+        )
+    }
+
+    func testServiceLabelHTTPS() {
+        XCTAssertEqual(makeConnection(port: "443").serviceLabel, "Secure web (HTTPS)")
+    }
+
+    func testServiceLabelHTTP() {
+        XCTAssertEqual(makeConnection(port: "80").serviceLabel, "Web (HTTP)")
+    }
+
+    func testServiceLabelDNS() {
+        XCTAssertEqual(makeConnection(port: "53").serviceLabel, "DNS lookup")
+    }
+
+    func testServiceLabelIMAP() {
+        XCTAssertEqual(makeConnection(port: "993").serviceLabel, "Email (IMAP)")
+    }
+
+    func testServiceLabelSMTP() {
+        XCTAssertEqual(makeConnection(port: "587").serviceLabel, "Email (SMTP)")
+    }
+
+    func testServiceLabelSSH() {
+        XCTAssertEqual(makeConnection(port: "22").serviceLabel, "SSH")
+    }
+
+    func testServiceLabelHighPort() {
+        XCTAssertEqual(makeConnection(port: "50000").serviceLabel, "High port 50000")
+    }
+
+    func testServiceLabelGenericPort() {
+        XCTAssertEqual(makeConnection(port: "9090").serviceLabel, "Port 9090")
     }
 }

@@ -13,11 +13,13 @@ final class SystemViewModel: ObservableObject {
     private let thermalService = ThermalService()
     private let networkService = NetworkService() // Also provides process data
     private let appSettings: AppSettings
+    private let notificationLog: NotificationLog
     private var refreshTimer: Timer?
     private var currentInterval: Double = 0
 
-    init(appSettings: AppSettings) {
+    init(appSettings: AppSettings, notificationLog: NotificationLog) {
         self.appSettings = appSettings
+        self.notificationLog = notificationLog
         requestNotificationPermission()
         startMonitoring()
     }
@@ -97,6 +99,7 @@ final class SystemViewModel: ObservableObject {
 
         let request = UNNotificationRequest(identifier: "thermal-\(UUID().uuidString)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+        notificationLog.add(type: .thermal, title: content.title, body: content.body)
     }
 
     private func sendBatteryHealthAlert() {
@@ -109,6 +112,7 @@ final class SystemViewModel: ObservableObject {
 
         let request = UNNotificationRequest(identifier: "battery-\(UUID().uuidString)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+        notificationLog.add(type: .battery, title: content.title, body: content.body)
     }
 
     deinit {

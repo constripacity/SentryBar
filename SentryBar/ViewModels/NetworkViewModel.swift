@@ -9,6 +9,9 @@ final class NetworkViewModel: ObservableObject {
     @Published var currentBandwidth: BandwidthSnapshot = .empty
     @Published var bandwidthHistory: [BandwidthSnapshot] = []
     @Published var isMeasuringBandwidth = false
+    @Published var sessionTotalIn: UInt64 = 0
+    @Published var sessionTotalOut: UInt64 = 0
+    @Published var sessionAppUsage: [String: (bytesIn: UInt64, bytesOut: UInt64)] = [:]
 
     private let networkService = NetworkService()
     private let bandwidthService = BandwidthService()
@@ -19,6 +22,7 @@ final class NetworkViewModel: ObservableObject {
     private var previouslySeenPIDs: Set<Int32> = []
     private var refreshCount: Int = 0
     private var bandwidthAlertedProcesses: Set<String> = []
+    private let notificationLog: NotificationLog
 
     var suspiciousCount: Int {
         connections.filter(\.isSuspicious).count
@@ -36,6 +40,17 @@ final class NetworkViewModel: ObservableObject {
         currentBandwidth.processes.isEmpty ? "--" : currentBandwidth.formattedRateIn
     }
 
+    var formattedSessionIn: String { formatBytes(sessionTotalIn) }
+    var formattedSessionOut: String { formatBytes(sessionTotalOut) }
+    var formattedSessionTotal: String { formatBytes(sessionTotalIn + sessionTotalOut) }
+
+    /// Top apps by cumulative session data usage, sorted by total bytes
+    var topSessionApps: [(name: String, bytesIn: UInt64, bytesOut: UInt64)] {
+        sessionAppUsage
+            .map { (name: $0.key, bytesIn: $0.value.bytesIn, bytesOut: $0.value.bytesOut) }
+            .sorted { ($0.bytesIn + $0.bytesOut) > ($1.bytesIn + $1.bytesOut) }
+    }
+
     /// Upload rate history for sparkline (bytes/sec, last 10 snapshots)
     var uploadRateHistory: [Double] {
         bandwidthHistory.map(\.rateOut)
@@ -51,9 +66,10 @@ final class NetworkViewModel: ObservableObject {
         connections.sorted { a, b in sortPriority(a) < sortPriority(b) }
     }
 
-    init(appSettings: AppSettings, ruleStore: ConnectionRuleStore) {
+    init(appSettings: AppSettings, ruleStore: ConnectionRuleStore, notificationLog: NotificationLog) {
         self.appSettings = appSettings
         self.ruleStore = ruleStore
+        self.notificationLog = notificationLog
         startMonitoring()
     }
 
@@ -145,6 +161,18 @@ final class NetworkViewModel: ObservableObject {
                     if self.bandwidthHistory.count > 10 {
                         self.bandwidthHistory.removeFirst(self.bandwidthHistory.count - 10)
                     }
+
+                    // Accumulate session totals
+                    self.sessionTotalIn += bandwidth.totalBytesIn
+                    self.sessionTotalOut += bandwidth.totalBytesOut
+                    for process in bandwidth.processes {
+                        let existing = self.sessionAppUsage[process.processName] ?? (bytesIn: 0, bytesOut: 0)
+                        self.sessionAppUsage[process.processName] = (
+                            bytesIn: existing.bytesIn + process.bytesIn,
+                            bytesOut: existing.bytesOut + process.bytesOut
+                        )
+                    }
+
                     self.checkBandwidthAlerts(bandwidth)
                 }
 
@@ -237,6 +265,7 @@ final class NetworkViewModel: ObservableObject {
         content.sound = .default
         let request = UNNotificationRequest(identifier: "suspicious-\(UUID().uuidString)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+        notificationLog.add(type: .suspicious, title: content.title, body: content.body)
     }
 
     private func sendBandwidthAlert(processName: String, bytes: UInt64) {
@@ -249,6 +278,7 @@ final class NetworkViewModel: ObservableObject {
         content.sound = .default
         let request = UNNotificationRequest(identifier: "bandwidth-\(UUID().uuidString)", content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
+        notificationLog.add(type: .bandwidth, title: content.title, body: content.body)
     }
 
     // MARK: - Helpers

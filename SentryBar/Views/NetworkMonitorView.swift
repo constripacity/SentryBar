@@ -4,13 +4,18 @@ struct NetworkMonitorView: View {
     @ObservedObject var viewModel: NetworkViewModel
     @State private var connectionToKill: NetworkConnection?
     @State private var showKillConfirmation = false
+    @State private var expandedApps: Set<String> = []
 
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
+                if viewModel.suspiciousCount > 0 {
+                    suspiciousAlertBanner
+                }
                 summaryCard
+                dataUsageCard
                 topConsumersCard
-                connectionsCard
+                appsCard
             }
             .padding(16)
         }
@@ -22,6 +27,33 @@ struct NetworkMonitorView: View {
         } message: { connection in
             Text("This will terminate \"\(connection.processName)\" (PID \(connection.pid)). The process may lose unsaved data.")
         }
+    }
+
+    // MARK: - Suspicious Alert Banner
+
+    private var suspiciousAlertBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.shield.fill")
+                .font(.title3)
+                .foregroundStyle(.red)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(viewModel.suspiciousCount) suspicious connection\(viewModel.suspiciousCount == 1 ? "" : "s") detected")
+                    .font(.caption.weight(.semibold))
+                Text("Review and block in the apps below")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+        }
+        .padding(12)
+        .background(Color.red.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.red.opacity(0.3), lineWidth: 1)
+        )
     }
 
     // MARK: - Summary Card
@@ -58,9 +90,9 @@ struct NetworkMonitorView: View {
                 )
 
                 StatBadge(
-                    icon: "link.circle.fill",
-                    label: "Connections",
-                    value: "\(viewModel.connections.count)",
+                    icon: "app.connected.to.app.below.fill",
+                    label: "Active Apps",
+                    value: "\(groupedConnections.count)",
                     color: .purple
                 )
 
@@ -83,7 +115,6 @@ struct NetworkMonitorView: View {
                 }
             }
 
-            // Sparkline section (appears after 2+ measurements)
             if viewModel.bandwidthHistory.count >= 2 {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -127,6 +158,100 @@ struct NetworkMonitorView: View {
         return bytes > 0 ? .green : .blue
     }
 
+    // MARK: - Session Data Usage Card
+
+    private var dataUsageCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label("Session Data Usage", systemImage: "flame.fill")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text(viewModel.formattedSessionTotal)
+                    .font(.system(.caption, design: .monospaced, weight: .bold))
+                    .foregroundStyle(.primary)
+            }
+
+            // Upload / Download totals
+            HStack(spacing: 16) {
+                // Upload
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Uploaded")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Text(viewModel.formattedSessionOut)
+                            .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                // Download
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.cyan)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Downloaded")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                        Text(viewModel.formattedSessionIn)
+                            .font(.system(.caption2, design: .monospaced, weight: .semibold))
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            // Per-app usage breakdown (top 5)
+            let topApps = Array(viewModel.topSessionApps.prefix(5))
+            if !topApps.isEmpty {
+                Divider()
+
+                ForEach(topApps, id: \.name) { app in
+                    let total = app.bytesIn + app.bytesOut
+                    let maxTotal = (topApps.first.map { $0.bytesIn + $0.bytesOut }) ?? 1
+                    HStack(spacing: 6) {
+                        Text(app.name)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .frame(width: 100, alignment: .leading)
+
+                        GeometryReader { geo in
+                            let fraction = maxTotal > 0 ? CGFloat(total) / CGFloat(maxTotal) : 0
+                            HStack(spacing: 0) {
+                                let outFraction = total > 0 ? CGFloat(app.bytesOut) / CGFloat(total) : 0
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.orange.opacity(0.5))
+                                    .frame(width: geo.size.width * fraction * outFraction)
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(Color.cyan.opacity(0.5))
+                                    .frame(width: geo.size.width * fraction * (1 - outFraction))
+                            }
+                        }
+                        .frame(height: 4)
+
+                        Text(formatBytes(total))
+                            .font(.system(size: 9, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 55, alignment: .trailing)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(.background.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+        )
+    }
+
     // MARK: - Top Bandwidth Consumers Card
 
     private var topConsumersCard: some View {
@@ -166,12 +291,26 @@ struct NetworkMonitorView: View {
         )
     }
 
-    // MARK: - Connections Card
+    // MARK: - Apps Card (Grouped Connections)
 
-    private var connectionsCard: some View {
+    /// Connections grouped by process name, sorted: blocked → suspicious → normal → trusted
+    private var groupedConnections: [(name: String, connections: [NetworkConnection])] {
+        let grouped = Dictionary(grouping: viewModel.connections, by: \.processName)
+        return grouped.map { (name: $0.key, connections: $0.value) }
+            .sorted { a, b in groupSortPriority(a.connections) < groupSortPriority(b.connections) }
+    }
+
+    private func groupSortPriority(_ connections: [NetworkConnection]) -> Int {
+        if connections.contains(where: { $0.userClassification == .blocked }) { return 0 }
+        if connections.contains(where: { $0.isSuspicious }) { return 1 }
+        if connections.contains(where: { $0.userClassification == .allowed }) { return 3 }
+        return 2
+    }
+
+    private var appsCard: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Label("Active Connections", systemImage: "point.3.connected.trianglepath.dotted")
+                Label("Active Apps", systemImage: "square.grid.2x2")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
@@ -195,15 +334,9 @@ struct NetworkMonitorView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                     .padding(.vertical, 12)
             } else {
-                ForEach(viewModel.sortedConnections) { connection in
-                    ConnectionRow(connection: connection, bandwidthDuration: viewModel.currentBandwidth.duration, onKill: {
-                        connectionToKill = connection
-                        showKillConfirmation = true
-                    })
-                    .contextMenu {
-                        connectionContextMenu(for: connection)
-                    }
-                    if connection.id != viewModel.sortedConnections.last?.id {
+                ForEach(groupedConnections, id: \.name) { group in
+                    appGroupView(name: group.name, connections: group.connections)
+                    if group.name != groupedConnections.last?.name {
                         Divider()
                     }
                 }
@@ -216,6 +349,177 @@ struct NetworkMonitorView: View {
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color.gray.opacity(0.15), lineWidth: 1)
         )
+    }
+
+    // MARK: - App Group
+
+    private func appGroupView(name: String, connections: [NetworkConnection]) -> some View {
+        let isExpanded = expandedApps.contains(name)
+        let hasSuspicious = connections.contains(where: { $0.isSuspicious })
+        let isBlocked = connections.contains(where: { $0.userClassification == .blocked })
+        let isTrusted = connections.contains(where: { $0.userClassification == .allowed })
+        let totalIn = connections.compactMap(\.bytesIn).reduce(0, +)
+        let totalOut = connections.compactMap(\.bytesOut).reduce(0, +)
+        let duration = viewModel.currentBandwidth.duration
+
+        return VStack(alignment: .leading, spacing: 6) {
+            // App header — tappable to expand
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    if expandedApps.contains(name) {
+                        expandedApps.remove(name)
+                    } else {
+                        expandedApps.insert(name)
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    // Status dot
+                    Circle()
+                        .fill(isBlocked ? Color.red : hasSuspicious ? Color.orange : isTrusted ? Color.green : Color.blue)
+                        .frame(width: 8, height: 8)
+
+                    Text(name)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+
+                    Text("\(connections.count)")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.gray.opacity(0.15))
+                        .clipShape(Capsule())
+
+                    Spacer()
+
+                    // Bandwidth summary
+                    if totalIn > 0 || totalOut > 0, duration > 0 {
+                        Text("↑\(formatRate(Double(totalOut) / duration))  ↓\(formatRate(Double(totalIn) / duration))")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Inline action buttons
+            HStack(spacing: 8) {
+                if !isTrusted {
+                    Button {
+                        viewModel.trustProcess(name)
+                    } label: {
+                        Label("Trust", systemImage: "checkmark.shield")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.green)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.green.opacity(0.1))
+                    .clipShape(Capsule())
+                    .help("Trust all connections from \(name)")
+                }
+
+                if !isBlocked {
+                    Button {
+                        viewModel.blockProcess(name)
+                    } label: {
+                        Label("Block", systemImage: "xmark.shield")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Color.red.opacity(0.1))
+                    .clipShape(Capsule())
+                    .help("Block all connections from \(name)")
+                }
+            }
+
+            // Expanded connection details
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(connections) { connection in
+                        connectionDetailRow(connection)
+                            .contextMenu {
+                                connectionContextMenu(for: connection)
+                            }
+                    }
+                }
+                .padding(.leading, 16)
+                .padding(.top, 4)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    // MARK: - Connection Detail Row
+
+    private func connectionDetailRow(_ connection: NetworkConnection) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: serviceIcon(for: connection))
+                .font(.system(size: 9))
+                .foregroundStyle(connection.isSuspicious ? .red : .secondary)
+                .frame(width: 14)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(connection.serviceLabel)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(connection.isSuspicious ? .red : .primary)
+
+                Text(connection.remoteAddress)
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            // Per-connection bandwidth
+            if let bytesIn = connection.bytesIn, let bytesOut = connection.bytesOut,
+               bytesIn > 0 || bytesOut > 0, viewModel.currentBandwidth.duration > 0 {
+                let rateIn = Double(bytesIn) / viewModel.currentBandwidth.duration
+                let rateOut = Double(bytesOut) / viewModel.currentBandwidth.duration
+                Text("↑\(formatRate(rateOut)) ↓\(formatRate(rateIn))")
+                    .font(.system(size: 8, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+
+            // Kill button for suspicious/blocked
+            if connection.canKill, connection.isSuspicious {
+                Button {
+                    connectionToKill = connection
+                    showKillConfirmation = true
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.red.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .help("Terminate \(connection.processName)")
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func serviceIcon(for connection: NetworkConnection) -> String {
+        switch connection.remotePort {
+        case "443", "8443": return "lock.fill"
+        case "80", "8080":  return "globe"
+        case "53":          return "magnifyingglass"
+        case "993", "143", "587", "465", "25": return "envelope.fill"
+        case "22":          return "terminal.fill"
+        case "5228", "5223": return "bell.fill"
+        case "3478", "3479": return "video.fill"
+        default:            return "circle.fill"
+        }
     }
 
     // MARK: - Context Menu
@@ -255,6 +559,16 @@ struct NetworkMonitorView: View {
             NSPasteboard.general.setString("\(connection.remoteAddress):\(connection.remotePort)", forType: .string)
         } label: {
             Label("Copy Address", systemImage: "doc.on.doc")
+        }
+
+        if connection.canKill {
+            Divider()
+            Button(role: .destructive) {
+                connectionToKill = connection
+                showKillConfirmation = true
+            } label: {
+                Label("Terminate Process", systemImage: "xmark.circle")
+            }
         }
     }
 }
@@ -305,90 +619,6 @@ struct BandwidthConsumerRow: View {
                     .frame(width: geo.size.width * fraction)
             }
             .frame(height: 4)
-        }
-    }
-}
-
-struct ConnectionRow: View {
-    let connection: NetworkConnection
-    let bandwidthDuration: TimeInterval
-    let onKill: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            // Status indicator with classification
-            statusIndicator
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(connection.processName)
-                        .font(.caption.weight(.medium))
-                        .lineLimit(1)
-
-                    if let classification = connection.userClassification {
-                        Text(classification == .allowed ? "Trusted" : "Blocked")
-                            .font(.system(size: 8, weight: .medium))
-                            .foregroundStyle(classification == .allowed ? .green : .red)
-                    }
-                }
-
-                Text("\(connection.remoteAddress):\(connection.remotePort)")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-
-                // Per-connection bandwidth rate (if available)
-                if let bytesIn = connection.bytesIn, let bytesOut = connection.bytesOut,
-                   bytesIn > 0 || bytesOut > 0 {
-                    let rateIn = bandwidthDuration > 0 ? Double(bytesIn) / bandwidthDuration : 0
-                    let rateOut = bandwidthDuration > 0 ? Double(bytesOut) / bandwidthDuration : 0
-                    Text("↑\(formatRate(rateOut))  ↓\(formatRate(rateIn))")
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            Spacer()
-
-            Text(connection.protocol)
-                .font(.system(size: 9, design: .monospaced))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.gray.opacity(0.15))
-                .clipShape(Capsule())
-
-            // Kill button (only for non-system processes)
-            if connection.canKill {
-                Button {
-                    onKill()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red.opacity(0.7))
-                }
-                .buttonStyle(.plain)
-                .help("Terminate \(connection.processName)")
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var statusIndicator: some View {
-        Group {
-            switch connection.userClassification {
-            case .allowed:
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.green)
-            case .blocked:
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(.red)
-            case nil:
-                Circle()
-                    .fill(connection.isSuspicious ? Color.red : Color.green)
-                    .frame(width: 6, height: 6)
-            }
         }
     }
 }
