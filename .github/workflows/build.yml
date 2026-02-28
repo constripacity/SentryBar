@@ -1,0 +1,62 @@
+name: Build SentryBar
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: macos-14  # Apple Silicon runner
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Select Xcode
+      run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+    - name: Install xcodegen
+      run: brew install xcodegen
+
+    - name: Generate Xcode project
+      run: xcodegen generate
+
+    - name: Build
+      run: |
+        xcodebuild build \
+          -project SentryBar.xcodeproj \
+          -scheme SentryBar \
+          -configuration Release \
+          -destination 'platform=macOS,arch=arm64' \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+    
+    - name: Archive (on tag)
+      if: startsWith(github.ref, 'refs/tags/')
+      run: |
+        xcodebuild archive \
+          -project SentryBar.xcodeproj \
+          -scheme SentryBar \
+          -configuration Release \
+          -archivePath build/SentryBar.xcarchive \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO
+        
+        # Export the .app
+        cp -R build/SentryBar.xcarchive/Products/Applications/SentryBar.app build/
+        
+        # Create DMG
+        hdiutil create -volname "SentryBar" \
+          -srcfolder build/SentryBar.app \
+          -ov -format UDZO \
+          build/SentryBar.dmg
+    
+    - name: Upload DMG
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: SentryBar.dmg
+        path: build/SentryBar.dmg
