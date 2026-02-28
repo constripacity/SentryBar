@@ -7,7 +7,8 @@ SentryBar is a lightweight macOS menubar app that combines system health monitor
 **Target:** macOS 13.0+ (Ventura) — runs on both Apple Silicon and Intel
 **Architecture:** MVVM (Model-View-ViewModel)
 **Distribution:** GitHub Releases as .dmg, eventually Homebrew
-**Version:** 0.4.0
+**Repository:** https://github.com/constripacity/SentryBar
+**Version:** 0.5.0
 
 ---
 
@@ -19,9 +20,9 @@ SentryBar/
 ├── Models/        → Plain data structs (BatteryInfo, ThermalInfo, NetworkConnection, AppSettings, ConnectionRule, BandwidthInfo)
 ├── Services/      → System interaction layer (IOKit, ProcessInfo, shell commands)
 ├── ViewModels/    → @MainActor ObservableObject classes managing state + timers
-├── Views/         → SwiftUI views (menubar panel, tabs, cards)
-├── Utilities/     → Extensions and helpers (Shell.run, formatBytes)
-└── Resources/     → Info.plist, assets
+├── Views/         → SwiftUI views (menubar panel, tabs, cards, sparkline)
+├── Utilities/     → Extensions and helpers (Shell.run, formatBytes, formatRate)
+└── Resources/     → Info.plist, Assets.xcassets (app icon)
 ```
 
 ### Data Flow
@@ -38,10 +39,12 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - ViewModels own Timer instances for polling (battery: 10s, network: 5s)
 - ThermalService uses NotificationCenter for event-driven thermal state changes
 - NetworkService shells out to `lsof` and `ps` via `Shell.run()` in Utilities/ShellHelper.swift
-- BandwidthService shells out to `nettop` via `Shell.run()` with 15s timeout
+- BandwidthService shells out to `nettop` via `Shell.run()` with 15s timeout; wall-clock duration measured for rate calculation
 - All UI updates happen on @MainActor; heavy work uses Task.detached
-- Connection rules stored as JSON at ~/Library/Application Support/SentryBar/rules.json
+- Connection rules stored as JSON at ~/Library/Application Support/SentryBar/rules.json (0600 permissions)
 - Settings persisted via `@AppStorage("com.sentrybar.*")` keys
+- Version display reads dynamically from `Bundle.main.infoDictionary?["CFBundleShortVersionString"]`
+- Info.plist uses `$(MARKETING_VERSION)` build variable from project.yml
 
 ---
 
@@ -68,6 +71,7 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - Always annotate with `@MainActor`
 - Use `@Published` for all UI-bound state
 - Create/invalidate timers in `startMonitoring()` / `stopMonitoring()`
+- Set state flags synchronously on MainActor before launching Task.detached (e.g., `isMeasuringBandwidth`)
 - Background work pattern:
   ```swift
   Task.detached { [weak self] in
@@ -85,6 +89,14 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - Shell commands go through `Shell.run()` in Utilities/ShellHelper.swift (5s default timeout, 15s for nettop)
 - Always handle errors gracefully — return sensible defaults, never crash
 
+### Security Rules
+- **Never interpolate user-supplied strings into Shell.run() commands** — only Int/Int32 types are safe
+- Shell.run() sends stderr to `FileHandle.nullDevice` to prevent info leakage
+- Shell.run() reads pipe data concurrently to prevent pipe buffer deadlock
+- `killProcess()` must validate PID > 1 and check process owner is not root
+- Rules file must be saved with POSIX 0600 permissions
+- No force-unwraps on system API results (use guard/fallback)
+
 ---
 
 ## Feature Modules
@@ -97,11 +109,13 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 
 ### Network Monitor (implemented)
 - **Connections** → parsed from `lsof -i -n -P` (ESTABLISHED connections)
+- **lsof Parsing** → handles escaped process names (`\xHH`), IPv6 bracket stripping, actual state extraction, robust field indexing
 - **Suspicious Detection** → heuristic: known bad ports (4444, 5555, 6666, 1337, 31337, 8888) + unknown processes on ephemeral ports
-- **Process Kill** → `kill <pid>` via shell (blocked for system processes, requires confirmation)
-- **Connection Rules** → allow/block list per process name, remote address, or port (JSON persistence)
+- **Process Kill** → `kill <pid>` via shell (PID validated, root-owned blocked, system processes blocked, requires confirmation)
+- **Connection Rules** → allow/block list per process name, remote address, or port (JSON persistence, 0600 permissions)
 - **Bandwidth Tracking** → per-process bandwidth via `nettop`, top consumers card, high-bandwidth alerts
-- **Stats** → connection count, suspicious count, upload/download totals
+- **Rate Calculation** → KB/s rates via wall-clock timing of nettop, sparkline visualization (last 10 snapshots)
+- **Stats** → connection count, suspicious count, upload/download rates
 
 ### Settings (implemented)
 - Launch at login (via SMAppService)
@@ -110,13 +124,12 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - Battery health threshold setting
 - High bandwidth threshold (MB)
 - Reset to defaults
+- Dynamic version display from app bundle
 
 ### Not Yet Implemented
 - [ ] Notification history / log view
 - [ ] Homebrew formula
-- [ ] App icon / SF Symbol customization
 - [ ] Sparkle or built-in update mechanism
-- [ ] Rate calculation (KB/s) and sparkline visualization
 
 ---
 
@@ -143,7 +156,7 @@ xcodebuild build \
   -scheme SentryBar \
   -configuration Debug
 
-# Run tests (80 unit tests)
+# Run tests (104 unit tests)
 xcodebuild test \
   -project SentryBar.xcodeproj \
   -scheme SentryBar
@@ -160,6 +173,11 @@ hdiutil create -volname "SentryBar" \
   -srcfolder build/SentryBar.xcarchive/Products/Applications/SentryBar.app \
   -ov -format UDZO build/SentryBar.dmg
 ```
+
+### CI/CD
+- `.github/workflows/build.yml` runs on push/PR to main
+- Installs xcodegen, generates project, builds Release
+- On tags: archives, creates DMG, uploads as artifact
 
 ---
 
@@ -182,30 +200,34 @@ hdiutil create -volname "SentryBar" \
 
 ## Testing
 
-### Current Coverage (80 tests, all passing)
+### Current Coverage (104 tests, all passing)
 | Test Suite | Tests | Coverage Area |
 |---|---|---|
 | BatteryInfoTests | 6 | Model defaults, time formatting |
 | ThermalInfoTests | 5 | State descriptions, recommendations |
 | NetworkConnectionTests | 17 | Suspicion heuristics, classification overrides, known processes |
 | ConnectionRuleTests | 12 | Rule CRUD, matching by process/address/port, first-rule-wins |
-| NetworkServiceTests | 14 | lsof parsing, ps parsing, connection string parsing |
-| BandwidthServiceTests | 14 | nettop parsing, process field parsing, aggregation, snapshots |
-| UtilitiesTests | 12 | formatBytes, Date extension, Optional extension |
+| NetworkServiceTests | 28 | lsof parsing (IPv6, escaped names, state extraction), ps parsing, connection string parsing, unescapeLsof |
+| BandwidthServiceTests | 18 | nettop parsing, process field parsing, aggregation, snapshots, rate calculation |
+| UtilitiesTests | 18 | formatBytes, formatRate, Date extension, Optional extension |
 
 ### Strategy
 - Unit test Services independently (mock shell output for NetworkService)
 - Test ViewModel state transitions (e.g., suspicious count updates after refresh)
 - Test model logic (NetworkConnection.evaluateSuspicion, BatteryInfo.timeRemainingFormatted)
+- IPv6 test data uses RFC 3849 documentation addresses (2001:db8::)
 - No UI tests needed yet — focus on service/logic coverage first
 
 ## Git Workflow
+- **Author identity:** constripacity <constripacity@users.noreply.github.com>
 - Branch naming: `feature/description`, `fix/description`, `refactor/description`
 - Commit messages: imperative mood, e.g., "Add settings panel with launch-at-login toggle"
 - Tag releases as `v0.1.0`, `v0.2.0`, etc. (tags trigger CI/CD DMG builds)
+- `.xcodeproj` is gitignored — regenerate with `xcodegen generate`
+- Strip EXIF/C2PA metadata from image assets before committing
 
 ---
 
 ## Known Issues & Technical Debt
-1. **lsof parsing is fragile** — output format can vary; needs more robust parsing with edge case handling
-2. **No rate calculation** — bandwidth shows total bytes per interval, not KB/s rate over time
+1. **No notification rate limiting** — rapid suspicious connection churn could flood notifications
+2. **System process allowlist is incomplete** — `killProcess()` uses root-owner check as defense-in-depth, but `NetworkConnection.systemProcesses` set could be expanded
