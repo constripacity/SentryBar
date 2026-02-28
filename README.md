@@ -41,44 +41,38 @@ Built natively with **Swift & SwiftUI** for minimal resource usage — perfect f
 
 ---
 
-## Screenshots
+## Install
 
-*Coming soon*
+### One-line install (recommended)
 
----
+```bash
+curl -fsSL https://raw.githubusercontent.com/constripacity/SentryBar/main/install.sh | bash
+```
 
-## Requirements
+This downloads the latest `.dmg` from GitHub Releases, installs `SentryBar.app` to `/Applications`, and cleans up automatically.
 
-- macOS 13.0 (Ventura) or later
-- Xcode 15.0+ or command line tools
-- Apple Silicon or Intel Mac
-- xcodegen (`brew install xcodegen`)
+### Download manually
 
-## Getting Started
+1. Go to [**Releases**](https://github.com/constripacity/SentryBar/releases/latest)
+2. Download `SentryBar.dmg`
+3. Open the DMG and drag `SentryBar.app` to your Applications folder
+4. Launch SentryBar — it appears in your menubar
 
-### 1. Clone the repo
+### Build from source
+
+Requires macOS 13.0+, Xcode 15.0+, and [xcodegen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+
 ```bash
 git clone https://github.com/constripacity/SentryBar.git
 cd SentryBar
+xcodegen generate
+xcodebuild build -project SentryBar.xcodeproj -scheme SentryBar -configuration Release
 ```
 
-### 2. Generate the Xcode project
-```bash
-xcodegen generate   # Creates SentryBar.xcodeproj from project.yml
-```
+Or open in Xcode:
 
-### 3. Open & Run
 ```bash
-open SentryBar.xcodeproj
-```
-- Select your Mac as the run destination
-- Press `Cmd + R`
-- SentryBar will appear in your menubar!
-
-### Command-line build
-```bash
-xcodebuild build -project SentryBar.xcodeproj -scheme SentryBar
-xcodebuild test -project SentryBar.xcodeproj -scheme SentryBar
+open SentryBar.xcodeproj   # Cmd+R to run
 ```
 
 ## Project Structure
@@ -94,6 +88,7 @@ SentryBar/
 │   │   ├── BatteryInfo.swift
 │   │   ├── ConnectionRule.swift
 │   │   ├── NetworkConnection.swift
+│   │   ├── NotificationLog.swift
 │   │   └── ThermalInfo.swift
 │   ├── Services/             # System & network data providers
 │   │   ├── BandwidthService.swift
@@ -107,6 +102,7 @@ SentryBar/
 │   ├── Views/                # SwiftUI views
 │   │   ├── MenuBarView.swift
 │   │   ├── NetworkMonitorView.swift
+│   │   ├── NotificationLogView.swift
 │   │   ├── RulesManagementView.swift
 │   │   ├── SettingsView.swift
 │   │   ├── SparklineView.swift
@@ -118,7 +114,8 @@ SentryBar/
 │   └── Resources/
 │       ├── Assets.xcassets
 │       └── Info.plist
-├── SentryBarTests/           # 104 unit tests
+├── SentryBarTests/           # 127 unit tests
+├── install.sh                # One-click installer
 ├── project.yml               # xcodegen spec
 ├── .gitignore
 ├── LICENSE
@@ -151,9 +148,10 @@ SentryBar runs **unsandboxed** because it needs access to system tools (`lsof`, 
 - [x] Bandwidth tracking (nettop)
 - [x] Rate calculation (KB/s) & sparkline visualization
 - [x] App icon
-- [x] Unit tests (104 tests)
-- [ ] Notification history / log view
-- [ ] Homebrew formula
+- [x] Unit tests (127 tests)
+- [x] Notification history / log view
+- [x] One-click install (GitHub Releases + install script)
+- [ ] Homebrew cask formula
 - [ ] Auto-update mechanism
 
 ## Tech Stack

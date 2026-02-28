@@ -8,7 +8,7 @@ SentryBar is a lightweight macOS menubar app that combines system health monitor
 **Architecture:** MVVM (Model-View-ViewModel)
 **Distribution:** GitHub Releases as .dmg, eventually Homebrew
 **Repository:** https://github.com/constripacity/SentryBar
-**Version:** 0.5.0
+**Version:** 0.6.0-dev
 
 ---
 
@@ -17,10 +17,10 @@ SentryBar is a lightweight macOS menubar app that combines system health monitor
 ```
 SentryBar/
 ├── App/           → App entry point, lifecycle (@main struct)
-├── Models/        → Plain data structs (BatteryInfo, ThermalInfo, NetworkConnection, AppSettings, ConnectionRule, BandwidthInfo)
+├── Models/        → Plain data structs (BatteryInfo, ThermalInfo, NetworkConnection, AppSettings, ConnectionRule, BandwidthInfo, NotificationLog)
 ├── Services/      → System interaction layer (IOKit, ProcessInfo, shell commands)
 ├── ViewModels/    → @MainActor ObservableObject classes managing state + timers
-├── Views/         → SwiftUI views (menubar panel, tabs, cards, sparkline)
+├── Views/         → SwiftUI views (menubar panel, tabs, cards, sparkline, notification log)
 ├── Utilities/     → Extensions and helpers (Shell.run, formatBytes, formatRate)
 └── Resources/     → Info.plist, Assets.xcassets (app icon)
 ```
@@ -110,12 +110,20 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 ### Network Monitor (implemented)
 - **Connections** → parsed from `lsof -i -n -P` (ESTABLISHED connections)
 - **lsof Parsing** → handles escaped process names (`\xHH`), IPv6 bracket stripping, actual state extraction, robust field indexing
-- **Suspicious Detection** → heuristic: known bad ports (4444, 5555, 6666, 1337, 31337, 8888) + unknown processes on ephemeral ports
+- **Suspicious Detection** → heuristic: known bad ports (4444, 5555, 6666, 1337, 31337, 8888) + unknown processes on ephemeral ports; 50+ system processes and 60+ known apps whitelisted to reduce false positives
 - **Process Kill** → `kill <pid>` via shell (PID validated, root-owned blocked, system processes blocked, requires confirmation)
 - **Connection Rules** → allow/block list per process name, remote address, or port (JSON persistence, 0600 permissions)
 - **Bandwidth Tracking** → per-process bandwidth via `nettop`, top consumers card, high-bandwidth alerts
 - **Rate Calculation** → KB/s rates via wall-clock timing of nettop, sparkline visualization (last 10 snapshots)
-- **Stats** → connection count, suspicious count, upload/download rates
+- **Session Data Usage** → cumulative upload/download totals since app launch, per-app breakdown with bar chart
+- **Grouped App View** → connections grouped by process name, expand/collapse, inline Trust/Block buttons, friendly port labels (e.g., 443 → "Secure web (HTTPS)")
+- **Stats** → connection count, suspicious count, upload/download rates, active apps count
+
+### Notification Log (implemented)
+- **NotificationLog** → @MainActor ObservableObject with ring buffer (max 50 entries, newest-first)
+- **NotificationType** → thermal, battery, suspicious, bandwidth — each with icon and label
+- **Alerts Tab** → shows past notifications with type badges, timestamps, clear all button
+- **Integration** → SystemViewModel and NetworkViewModel log alerts to shared NotificationLog
 
 ### Settings (implemented)
 - Launch at login (via SMAppService)
@@ -127,7 +135,6 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - Dynamic version display from app bundle
 
 ### Not Yet Implemented
-- [ ] **Notification history / log view** — new tab showing past alerts (thermal, suspicious, battery, bandwidth); needs a lightweight in-memory or on-disk log model, a new NotificationLogView, and integration with existing UNUserNotificationCenter calls
 - [ ] **Homebrew formula** — `brew install --cask sentrybar` distribution; requires a stable .dmg download URL from GitHub Releases
 - [ ] **Auto-update mechanism** — Sparkle framework or built-in update checker; must stay lightweight (battery-conscious)
 
@@ -156,7 +163,7 @@ xcodebuild build \
   -scheme SentryBar \
   -configuration Debug
 
-# Run tests (104 unit tests)
+# Run tests (127 unit tests)
 xcodebuild test \
   -project SentryBar.xcodeproj \
   -scheme SentryBar
@@ -200,15 +207,16 @@ hdiutil create -volname "SentryBar" \
 
 ## Testing
 
-### Current Coverage (104 tests, all passing)
+### Current Coverage (127 tests, all passing)
 | Test Suite | Tests | Coverage Area |
 |---|---|---|
 | BatteryInfoTests | 6 | Model defaults, time formatting |
 | ThermalInfoTests | 5 | State descriptions, recommendations |
-| NetworkConnectionTests | 17 | Suspicion heuristics, classification overrides, known processes |
+| NetworkConnectionTests | 29 | Suspicion heuristics, classification overrides, known processes (expanded), serviceLabel mapping |
 | ConnectionRuleTests | 12 | Rule CRUD, matching by process/address/port, first-rule-wins |
 | NetworkServiceTests | 28 | lsof parsing (IPv6, escaped names, state extraction), ps parsing, connection string parsing, unescapeLsof |
 | BandwidthServiceTests | 18 | nettop parsing, process field parsing, aggregation, snapshots, rate calculation |
+| NotificationLogTests | 11 | Entry creation, ordering, ring buffer cap, clear all, notification types |
 | UtilitiesTests | 18 | formatBytes, formatRate, Date extension, Optional extension |
 
 ### Strategy
@@ -230,7 +238,6 @@ hdiutil create -volname "SentryBar" \
 
 ## Known Issues & Technical Debt
 1. **No notification rate limiting** — rapid suspicious connection churn could flood notifications; add cooldown/dedup logic per notification type
-2. **System process allowlist is incomplete** — `killProcess()` uses root-owner check as defense-in-depth, but `NetworkConnection.systemProcesses` set should be expanded
 
 ## Release Milestone
 - **First .dmg release** — tag `v0.5.0` on main, let CI archive step produce the DMG artifact, then create a GitHub Release with the .dmg attached
