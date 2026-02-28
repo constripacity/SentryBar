@@ -55,17 +55,19 @@ final class BatteryService {
         var cycleCount = 0
 
         // Max capacity (design vs current)
-        // On Apple Silicon, "MaxCapacity" is the system's official health percentage (matches System Report).
-        // On Intel Macs, "MaxCapacity" is raw mAh and must be divided by "DesignCapacity".
+        // Apple Silicon: "AppleRawMaxCapacity" = raw mAh, "MaxCapacity" = fixed scale (100), not useful.
+        // Intel: "MaxCapacity" = raw mAh (no AppleRawMaxCapacity key).
+        // Both: "DesignCapacity" = original design capacity in mAh.
+        let rawMax = getIORegistryValue(service: service, key: "AppleRawMaxCapacity") as? Int
         let maxCapacity = getIORegistryValue(service: service, key: "MaxCapacity") as? Int
         let designCapacity = getIORegistryValue(service: service, key: "DesignCapacity") as? Int
 
-        if let maxCapacity, maxCapacity > 0 {
-            if let designCapacity, designCapacity > 1000, maxCapacity <= 100 {
-                // Apple Silicon: MaxCapacity is already a percentage
-                healthPercent = maxCapacity
-            } else if let designCapacity, designCapacity > 0 {
-                // Intel: both values are raw mAh
+        if let designCapacity, designCapacity > 0 {
+            if let rawMax, rawMax > 0 {
+                // Apple Silicon: use raw capacity
+                healthPercent = (rawMax * 100) / designCapacity
+            } else if let maxCapacity, maxCapacity > 100 {
+                // Intel: MaxCapacity is raw mAh (always >100 for laptop batteries)
                 healthPercent = (maxCapacity * 100) / designCapacity
             }
         }
