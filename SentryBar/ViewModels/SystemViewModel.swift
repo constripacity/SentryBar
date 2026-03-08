@@ -16,6 +16,9 @@ final class SystemViewModel: ObservableObject {
     private let notificationLog: NotificationLog
     private var refreshTimer: Timer?
     private var currentInterval: Double = 0
+    private var lastThermalAlertTime: Date?
+    private var lastBatteryAlertTime: Date?
+    private let notificationCooldown: TimeInterval = 60 // seconds between alerts of same type
 
     init(appSettings: AppSettings, notificationLog: NotificationLog) {
         self.appSettings = appSettings
@@ -90,6 +93,12 @@ final class SystemViewModel: ObservableObject {
     private func sendThermalAlert(state: ProcessInfo.ThermalState) {
         guard appSettings.showNotifications, appSettings.notifyOnThermalWarning else { return }
 
+        // Rate limiting: skip if we sent a thermal alert within the cooldown window
+        if let lastTime = lastThermalAlertTime, Date().timeIntervalSince(lastTime) < notificationCooldown {
+            return
+        }
+        lastThermalAlertTime = Date()
+
         let content = UNMutableNotificationContent()
         content.title = "SentryBar: Thermal Warning"
         content.body = state == .critical
@@ -104,6 +113,12 @@ final class SystemViewModel: ObservableObject {
 
     private func sendBatteryHealthAlert() {
         guard appSettings.showNotifications, appSettings.notifyOnBatteryHealthDrop else { return }
+
+        // Rate limiting: skip if we sent a battery alert within the cooldown window
+        if let lastTime = lastBatteryAlertTime, Date().timeIntervalSince(lastTime) < notificationCooldown {
+            return
+        }
+        lastBatteryAlertTime = Date()
 
         let content = UNMutableNotificationContent()
         content.title = "SentryBar: Battery Health"

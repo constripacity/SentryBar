@@ -23,6 +23,9 @@ final class NetworkViewModel: ObservableObject {
     private var refreshCount: Int = 0
     private var bandwidthAlertedProcesses: Set<String> = []
     private let notificationLog: NotificationLog
+    private var lastSuspiciousAlertTime: Date?
+    private var lastBandwidthAlertTime: Date?
+    private let notificationCooldown: TimeInterval = 60 // seconds between alerts of same type
 
     var suspiciousCount: Int {
         connections.filter(\.isSuspicious).count
@@ -253,6 +256,12 @@ final class NetworkViewModel: ObservableObject {
     private func sendSuspiciousAlert(count: Int, note: String?, processName: String?) {
         guard appSettings.showNotifications, appSettings.notifyOnSuspiciousConnection else { return }
 
+        // Rate limiting: skip if we sent a suspicious alert within the cooldown window
+        if let lastTime = lastSuspiciousAlertTime, Date().timeIntervalSince(lastTime) < notificationCooldown {
+            return
+        }
+        lastSuspiciousAlertTime = Date()
+
         let content = UNMutableNotificationContent()
         content.title = "SentryBar: Suspicious Connections"
         if let name = processName, let note {
@@ -269,6 +278,12 @@ final class NetworkViewModel: ObservableObject {
     }
 
     private func sendBandwidthAlert(processName: String, bytes: UInt64) {
+        // Rate limiting: skip if we sent a bandwidth alert within the cooldown window
+        if let lastTime = lastBandwidthAlertTime, Date().timeIntervalSince(lastTime) < notificationCooldown {
+            return
+        }
+        lastBandwidthAlertTime = Date()
+
         let content = UNMutableNotificationContent()
         content.title = "SentryBar: High Bandwidth"
         let rate = currentBandwidth.duration > 0

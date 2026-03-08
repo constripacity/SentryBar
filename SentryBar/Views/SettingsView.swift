@@ -7,19 +7,24 @@ struct SettingsView: View {
     @State private var showRulesManager = false
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                generalSection
-                notificationsSection
-                connectionRulesSection
-                batterySection
-                aboutSection
-                resetButton
+        if showRulesManager {
+            RulesManagementView(ruleStore: ruleStore, isShowing: $showRulesManager)
+        } else {
+            ScrollView {
+                VStack(spacing: 12) {
+                    if let update = viewModel.updateAvailable {
+                        updateBanner(update)
+                    }
+                    generalSection
+                    appearanceSection
+                    notificationsSection
+                    connectionRulesSection
+                    batterySection
+                    aboutSection
+                    resetButton
+                }
+                .padding(16)
             }
-            .padding(16)
-        }
-        .sheet(isPresented: $showRulesManager) {
-            RulesManagementView(ruleStore: ruleStore)
         }
     }
 
@@ -160,7 +165,9 @@ struct SettingsView: View {
                 Spacer()
 
                 Button("Manage Rules...") {
-                    showRulesManager = true
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showRulesManager = true
+                    }
                 }
                 .font(.caption)
                 .help("Open the rules manager to add, edit, or remove connection rules")
@@ -236,6 +243,86 @@ struct SettingsView: View {
                 Spacer()
                 Link("GitHub", destination: URL(string: "https://github.com/constripacity/SentryBar")!)
                     .font(.caption)
+            }
+
+            Toggle("Check for updates automatically", isOn: $viewModel.appSettings.checkForUpdates)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .help("Check GitHub Releases for new versions once per day")
+        }
+        .padding(12)
+        .background(.background.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Update Banner
+
+    private func updateBanner(_ update: UpdateService.UpdateInfo) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.down.circle.fill")
+                .foregroundStyle(.blue)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Update Available: v\(update.latestVersion)")
+                    .font(.caption.weight(.semibold))
+                Text("You're running v\(update.currentVersion)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Link("Download", destination: URL(string: update.releaseURL)!)
+                .font(.caption.weight(.medium))
+        }
+        .padding(12)
+        .background(Color.blue.opacity(0.1))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.blue.opacity(0.3), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Appearance
+
+    private var appearanceSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Appearance", systemImage: "paintbrush")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Menubar Icon")
+                    .font(.caption)
+
+                let icons = MenuBarIconOption.allOptions
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 5), spacing: 8) {
+                    ForEach(icons, id: \.symbol) { option in
+                        Button {
+                            viewModel.appSettings.menuBarIcon = option.symbol
+                        } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: option.symbol)
+                                    .font(.title3)
+                                    .frame(width: 32, height: 32)
+                                Text(option.label)
+                                    .font(.system(size: 8))
+                                    .lineLimit(1)
+                            }
+                            .padding(4)
+                            .background(viewModel.appSettings.menuBarIcon == option.symbol ? Color.accentColor.opacity(0.15) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(viewModel.appSettings.menuBarIcon == option.symbol ? Color.accentColor : Color.clear, lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .help(option.label)
+                    }
+                }
             }
         }
         .padding(12)

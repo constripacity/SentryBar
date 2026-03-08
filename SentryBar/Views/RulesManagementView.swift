@@ -2,18 +2,39 @@ import SwiftUI
 
 struct RulesManagementView: View {
     @ObservedObject var ruleStore: ConnectionRuleStore
-    @State private var showAddRule = false
-    @Environment(\.dismiss) private var dismiss
+    @Binding var isShowing: Bool
+    @State private var showAddForm = false
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Connection Rules")
-                    .font(.headline)
-                Spacer()
                 Button {
-                    showAddRule = true
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isShowing = false
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.caption2)
+                        Text("Settings")
+                            .font(.caption)
+                    }
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Text("Connection Rules")
+                    .font(.caption.weight(.semibold))
+
+                Spacer()
+
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showAddForm.toggle()
+                    }
                 } label: {
                     Image(systemName: "plus.circle.fill")
                         .font(.title3)
@@ -21,14 +42,25 @@ struct RulesManagementView: View {
                 .buttonStyle(.plain)
                 .help("Add a new rule")
             }
-            .padding(16)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
 
             Divider()
 
-            if ruleStore.rules.isEmpty {
-                emptyState
-            } else {
-                rulesList
+            ScrollView {
+                VStack(spacing: 12) {
+                    // Inline add form
+                    if showAddForm {
+                        AddRuleForm(ruleStore: ruleStore, isShowing: $showAddForm)
+                    }
+
+                    if ruleStore.rules.isEmpty && !showAddForm {
+                        emptyState
+                    } else {
+                        rulesList
+                    }
+                }
+                .padding(16)
             }
 
             Divider()
@@ -39,14 +71,15 @@ struct RulesManagementView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Done") { dismiss() }
-                    .font(.caption)
+                Button("Done") {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isShowing = false
+                    }
+                }
+                .font(.caption)
             }
-            .padding(16)
-        }
-        .frame(width: 400, height: 500)
-        .sheet(isPresented: $showAddRule) {
-            AddRuleView(ruleStore: ruleStore)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
         }
     }
 
@@ -65,26 +98,24 @@ struct RulesManagementView: View {
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 40)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40)
     }
 
     // MARK: - Rules List
 
     private var rulesList: some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                let allowed = ruleStore.rules.filter { $0.ruleType == .allowed }
-                let blocked = ruleStore.rules.filter { $0.ruleType == .blocked }
+        VStack(spacing: 12) {
+            let allowed = ruleStore.rules.filter { $0.ruleType == .allowed }
+            let blocked = ruleStore.rules.filter { $0.ruleType == .blocked }
 
-                if !allowed.isEmpty {
-                    rulesSection(title: "Trusted (Allow List)", rules: allowed, color: .green)
-                }
-
-                if !blocked.isEmpty {
-                    rulesSection(title: "Blocked (Block List)", rules: blocked, color: .red)
-                }
+            if !allowed.isEmpty {
+                rulesSection(title: "Trusted (Allow List)", rules: allowed, color: .green)
             }
-            .padding(16)
+
+            if !blocked.isEmpty {
+                rulesSection(title: "Blocked (Block List)", rules: blocked, color: .red)
+            }
         }
     }
 
@@ -151,24 +182,38 @@ struct RulesManagementView: View {
     }
 }
 
-// MARK: - Add Rule Sheet
+// MARK: - Inline Add Rule Form
 
-struct AddRuleView: View {
+struct AddRuleForm: View {
     @ObservedObject var ruleStore: ConnectionRuleStore
-    @Environment(\.dismiss) private var dismiss
+    @Binding var isShowing: Bool
     @State private var ruleType: RuleType = .allowed
     @State private var matchField: MatchField = .processName
     @State private var matchValue = ""
     @State private var note = ""
 
     var body: some View {
-        VStack(spacing: 16) {
-            Text("Add Connection Rule")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("New Rule")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isShowing = false
+                    }
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel adding rule")
+            }
 
             Picker("Type", selection: $ruleType) {
-                Text("Allow (Trusted)").tag(RuleType.allowed)
-                Text("Block (Untrusted)").tag(RuleType.blocked)
+                Text("Allow").tag(RuleType.allowed)
+                Text("Block").tag(RuleType.blocked)
             }
             .pickerStyle(.segmented)
             .help("Choose whether to trust or block matching connections")
@@ -178,18 +223,20 @@ struct AddRuleView: View {
                     Text(field.label).tag(field)
                 }
             }
+            .font(.caption)
             .help("Which connection property to match against")
 
             TextField(placeholder, text: $matchValue)
                 .textFieldStyle(.roundedBorder)
+                .font(.caption)
                 .help("Enter the value to match")
 
             TextField("Note (optional)", text: $note)
                 .textFieldStyle(.roundedBorder)
+                .font(.caption)
                 .help("Optional description for this rule")
 
             HStack {
-                Button("Cancel") { dismiss() }
                 Spacer()
                 Button("Add Rule") {
                     let rule = ConnectionRule(
@@ -199,14 +246,21 @@ struct AddRuleView: View {
                         note: note.isEmpty ? nil : note
                     )
                     ruleStore.addRule(rule)
-                    dismiss()
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isShowing = false
+                    }
                 }
+                .font(.caption.weight(.medium))
                 .disabled(matchValue.trimmingCharacters(in: .whitespaces).isEmpty)
-                .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
-        .frame(width: 320)
+        .padding(12)
+        .background(Color.accentColor.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.accentColor.opacity(0.2), lineWidth: 1)
+        )
     }
 
     private var placeholder: String {

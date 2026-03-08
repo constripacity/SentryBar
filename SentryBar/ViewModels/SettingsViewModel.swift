@@ -5,6 +5,20 @@ import ServiceManagement
 @MainActor
 final class SettingsViewModel: ObservableObject {
     var appSettings = AppSettings()
+    @Published var updateAvailable: UpdateService.UpdateInfo?
+
+    private let updateService = UpdateService()
+
+    func checkForUpdates() {
+        guard appSettings.checkForUpdates else { return }
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let info = await self.updateService.checkForUpdate()
+            await MainActor.run {
+                self.updateAvailable = info
+            }
+        }
+    }
 
     func toggleLaunchAtLogin() {
         do {
@@ -31,7 +45,9 @@ final class SettingsViewModel: ObservableObject {
             "com.sentrybar.notifyOnBatteryHealthDrop",
             "com.sentrybar.batteryHealthThreshold",
             "com.sentrybar.notifyOnHighBandwidth",
-            "com.sentrybar.highBandwidthThresholdMB"
+            "com.sentrybar.highBandwidthThresholdMB",
+            "com.sentrybar.checkForUpdates",
+            "com.sentrybar.menuBarIcon"
         ]
         for key in keys {
             defaults.removeObject(forKey: key)

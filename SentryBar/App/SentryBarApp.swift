@@ -24,9 +24,12 @@ struct SentryBarApp: App {
         MenuBarExtra {
             MenuBarView(systemVM: systemVM, networkVM: networkVM, settingsVM: settingsVM, ruleStore: ruleStore, notificationLog: notificationLog)
                 .frame(width: 360, height: 480)
+                .onAppear {
+                    settingsVM.checkForUpdates()
+                }
         } label: {
             // Menubar icon + status indicator
-            StatusIconView(systemVM: systemVM, networkVM: networkVM)
+            StatusIconView(systemVM: systemVM, networkVM: networkVM, appSettings: settingsVM.appSettings)
         }
         .menuBarExtraStyle(.window) // Shows as a dropdown panel, not a menu
     }

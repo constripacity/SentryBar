@@ -6,9 +6,9 @@ SentryBar is a lightweight macOS menubar app that combines system health monitor
 **Stack:** Swift 5.9 + SwiftUI (native macOS, no Electron/web)
 **Target:** macOS 13.0+ (Ventura) — runs on both Apple Silicon and Intel
 **Architecture:** MVVM (Model-View-ViewModel)
-**Distribution:** GitHub Releases as .dmg, eventually Homebrew
+**Distribution:** GitHub Releases as .dmg, one-click install script, Homebrew cask
 **Repository:** https://github.com/constripacity/SentryBar
-**Version:** 0.6.0-dev
+**Version:** 0.7.0
 
 ---
 
@@ -17,7 +17,7 @@ SentryBar is a lightweight macOS menubar app that combines system health monitor
 ```
 SentryBar/
 ├── App/           → App entry point, lifecycle (@main struct)
-├── Models/        → Plain data structs (BatteryInfo, ThermalInfo, NetworkConnection, AppSettings, ConnectionRule, BandwidthInfo, NotificationLog)
+├── Models/        → Plain data structs (BatteryInfo, ThermalInfo, NetworkConnection, AppSettings, ConnectionRule, BandwidthInfo, NotificationLog, MenuBarIconOption)
 ├── Services/      → System interaction layer (IOKit, ProcessInfo, shell commands)
 ├── ViewModels/    → @MainActor ObservableObject classes managing state + timers
 ├── Views/         → SwiftUI views (menubar panel, tabs, cards, sparkline, notification log)
@@ -131,12 +131,32 @@ System APIs (IOKit, ProcessInfo, lsof, nettop)
 - Notification toggles (thermal, suspicious, battery health, high bandwidth)
 - Battery health threshold setting
 - High bandwidth threshold (MB)
+- Menubar icon customization (10 SF Symbol choices)
+- Auto-update toggle (checks GitHub Releases once per 24h)
 - Reset to defaults
 - Dynamic version display from app bundle
 
-### Not Yet Implemented
-- [ ] **Homebrew formula** — `brew install --cask sentrybar` distribution; requires a stable .dmg download URL from GitHub Releases
-- [ ] **Auto-update mechanism** — Sparkle framework or built-in update checker; must stay lightweight (battery-conscious)
+### Homebrew Cask (implemented)
+- **Cask formula** at `Casks/sentrybar.rb` — ready for a separate `homebrew-sentrybar` tap repo
+- Install: `brew tap constripacity/sentrybar && brew install sentrybar`
+- Livecheck auto-detects new GitHub Releases via tag regex
+
+### Auto-Update Checker (implemented)
+- **UpdateService** → lightweight GitHub Releases API check (no Sparkle, no heavyweight frameworks)
+- Checks at most once per 24 hours (battery-friendly, cooldown via UserDefaults timestamp)
+- Shows blue banner in Settings when update available, with direct download link
+- Toggle in Settings: "Check for updates automatically"
+
+### Menubar Icon Customization (implemented)
+- **MenuBarIconOption** model → 10 SF Symbol choices (shields, network, eye, cpu, antenna, etc.)
+- Icon picker grid in Settings → Appearance section
+- Persisted via `@AppStorage("com.sentrybar.menuBarIcon")`
+- StatusIconView reads the setting dynamically
+
+### Notification Rate Limiting (implemented)
+- 60-second cooldown per notification type (suspicious, bandwidth, thermal, battery)
+- Prevents flooding during rapid state churn (e.g., flapping suspicious connections)
+- Cooldown tracked via `lastXAlertTime: Date?` in each ViewModel
 
 ---
 
@@ -182,9 +202,24 @@ hdiutil create -volname "SentryBar" \
 ```
 
 ### CI/CD
-- `.github/workflows/build.yml` runs on push/PR to main
+- `.github/workflows/build.yml` runs on push/PR to main and on `v*` tags
 - Installs xcodegen, generates project, builds Release
-- On tags: archives, creates DMG, uploads as artifact
+- On tags: archives, creates DMG, creates GitHub Release with DMG attached (via `softprops/action-gh-release@v2`)
+
+### One-Click Install
+```bash
+curl -fsSL https://raw.githubusercontent.com/constripacity/SentryBar/main/install.sh | bash
+```
+- `install.sh` downloads latest DMG from GitHub Releases, mounts, copies to `/Applications`, cleans up
+- Manual: download `SentryBar.dmg` from [Releases](https://github.com/constripacity/SentryBar/releases/latest)
+
+### Homebrew
+```bash
+brew tap constripacity/sentrybar
+brew install sentrybar
+```
+- Cask formula at `Casks/sentrybar.rb` — copy to a `homebrew-sentrybar` tap repo for distribution
+- Livecheck auto-detects new releases; update sha256 on each release
 
 ---
 
@@ -207,7 +242,7 @@ hdiutil create -volname "SentryBar" \
 
 ## Testing
 
-### Current Coverage (127 tests, all passing)
+### Current Coverage (136 tests, all passing)
 | Test Suite | Tests | Coverage Area |
 |---|---|---|
 | BatteryInfoTests | 6 | Model defaults, time formatting |
@@ -217,6 +252,8 @@ hdiutil create -volname "SentryBar" \
 | NetworkServiceTests | 28 | lsof parsing (IPv6, escaped names, state extraction), ps parsing, connection string parsing, unescapeLsof |
 | BandwidthServiceTests | 18 | nettop parsing, process field parsing, aggregation, snapshots, rate calculation |
 | NotificationLogTests | 11 | Entry creation, ordering, ring buffer cap, clear all, notification types |
+| UpdateServiceTests | 5 | Version comparison (newer, same, older, major bump, patch bump) |
+| MenuBarIconOptionTests | 4 | Unique symbols, labels, default icon presence, minimum count |
 | UtilitiesTests | 18 | formatBytes, formatRate, Date extension, Optional extension |
 
 ### Strategy
@@ -237,8 +274,11 @@ hdiutil create -volname "SentryBar" \
 ---
 
 ## Known Issues & Technical Debt
-1. **No notification rate limiting** — rapid suspicious connection churn could flood notifications; add cooldown/dedup logic per notification type
+1. ~~**No notification rate limiting**~~ — resolved in v0.7.0: 60-second cooldown per notification type
 
-## Release Milestone
-- **First .dmg release** — tag `v0.5.0` on main, let CI archive step produce the DMG artifact, then create a GitHub Release with the .dmg attached
-- CI uses Xcode 16.2 on `macos-14` runner (fixed 2026-02-28: project format 77 requires Xcode 16+)
+## Releases
+- **v0.7.0** — Homebrew cask, auto-update checker, menubar icon customization, notification rate limiting
+- **v0.6.0** — one-click install (install.sh + GitHub Releases automation), notification log, network UX redesign, session data tracker, expanded known processes, battery health fix
+- **v0.5.0** — rate calculation (KB/s) with sparkline, lsof hardening, security hardening, app icon, open-source release
+- CI uses Xcode 16.2 on `macos-14` runner (project format 77 requires Xcode 16+)
+- Tags trigger automated GitHub Releases with DMG attached

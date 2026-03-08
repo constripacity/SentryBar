@@ -3,10 +3,11 @@ import SwiftUI
 struct StatusIconView: View {
     @ObservedObject var systemVM: SystemViewModel
     @ObservedObject var networkVM: NetworkViewModel
+    var appSettings: AppSettings
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "shield.checkered")
+            Image(systemName: appSettings.menuBarIcon)
             Circle()
                 .fill(statusColor)
                 .frame(width: 7, height: 7)

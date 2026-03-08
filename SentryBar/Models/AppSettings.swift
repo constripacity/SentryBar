@@ -31,4 +31,10 @@ final class AppSettings: ObservableObject {
 
     @AppStorage("com.sentrybar.highBandwidthThresholdMB")
     var highBandwidthThresholdMB: Int = 50
+
+    @AppStorage("com.sentrybar.checkForUpdates")
+    var checkForUpdates: Bool = true
+
+    @AppStorage("com.sentrybar.menuBarIcon")
+    var menuBarIcon: String = "shield.checkered"
 }

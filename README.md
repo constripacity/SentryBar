@@ -26,24 +26,35 @@ Built natively with **Swift & SwiftUI** for minimal resource usage — perfect f
 - Connection allow/block rules (per process, address, or port)
 - One-click process termination with confirmation
 - High bandwidth usage alerts
+- Session data usage tracking with per-app breakdown
 
 ### Settings
 - Launch at login toggle
 - Configurable refresh intervals (system & network)
 - Notification preferences (thermal, suspicious, battery, bandwidth)
 - Battery health & bandwidth alert thresholds
+- Menubar icon customization (10 SF Symbol choices)
+- Automatic update checking (checks GitHub Releases once per day)
 
 ### UX
 - Lives in the menubar — zero dock clutter
-- Tabbed dropdown panel (System / Network / Settings)
+- Tabbed dropdown panel (System / Network / Alerts / Settings)
 - Color-coded status indicators
-- Native macOS notifications for alerts
+- Native macOS notifications with rate limiting (60s cooldown per type)
+- Notification history log with type badges and timestamps
 
 ---
 
 ## Install
 
-### One-line install (recommended)
+### Homebrew (recommended)
+
+```bash
+brew tap constripacity/sentrybar
+brew install sentrybar
+```
+
+### One-line install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/constripacity/SentryBar/main/install.sh | bash
@@ -87,6 +98,7 @@ SentryBar/
 │   │   ├── BandwidthInfo.swift
 │   │   ├── BatteryInfo.swift
 │   │   ├── ConnectionRule.swift
+│   │   ├── MenuBarIconOption.swift
 │   │   ├── NetworkConnection.swift
 │   │   ├── NotificationLog.swift
 │   │   └── ThermalInfo.swift
@@ -94,7 +106,8 @@ SentryBar/
 │   │   ├── BandwidthService.swift
 │   │   ├── BatteryService.swift
 │   │   ├── NetworkService.swift
-│   │   └── ThermalService.swift
+│   │   ├── ThermalService.swift
+│   │   └── UpdateService.swift
 │   ├── ViewModels/           # Observable state managers
 │   │   ├── NetworkViewModel.swift
 │   │   ├── SettingsViewModel.swift
@@ -114,7 +127,9 @@ SentryBar/
 │   └── Resources/
 │       ├── Assets.xcassets
 │       └── Info.plist
-├── SentryBarTests/           # 127 unit tests
+├── SentryBarTests/           # 136 unit tests
+├── Casks/                    # Homebrew cask formula
+│   └── sentrybar.rb
 ├── install.sh                # One-click installer
 ├── project.yml               # xcodegen spec
 ├── .gitignore
@@ -132,6 +147,8 @@ SentryBar runs **unsandboxed** because it needs access to system tools (`lsof`, 
 - Connection rules stored with restrictive file permissions (0600)
 - stderr is discarded from shell output to prevent information leakage
 - Hardened Runtime is enabled for distribution builds
+- Notification rate limiting prevents alert flooding (60s cooldown per type)
+- Update checker contacts only the public GitHub Releases API (no telemetry, no tracking)
 
 ## Roadmap
 
@@ -148,11 +165,15 @@ SentryBar runs **unsandboxed** because it needs access to system tools (`lsof`, 
 - [x] Bandwidth tracking (nettop)
 - [x] Rate calculation (KB/s) & sparkline visualization
 - [x] App icon
-- [x] Unit tests (127 tests)
+- [x] Unit tests (136 tests)
 - [x] Notification history / log view
 - [x] One-click install (GitHub Releases + install script)
-- [ ] Homebrew cask formula
-- [ ] Auto-update mechanism
+- [x] Homebrew cask formula
+- [x] Auto-update checker (lightweight GitHub API, 24h cooldown)
+- [x] Menubar icon customization (10 SF Symbol choices)
+- [x] Notification rate limiting (60s cooldown per type)
+- [ ] Publish Homebrew tap repo
+- [ ] In-app download & install via Sparkle (if needed)
 
 ## Tech Stack
 
@@ -165,6 +186,7 @@ SentryBar runs **unsandboxed** because it needs access to system tools (`lsof`, 
 | Settings | @AppStorage (UserDefaults) |
 | Rules | JSON (Codable) |
 | Notifications | UNUserNotificationCenter |
+| Updates | GitHub Releases API (URLSession) |
 | Build | xcodegen + xcodebuild |
 | Architecture | MVVM |
 
