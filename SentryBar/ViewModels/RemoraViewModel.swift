@@ -55,10 +55,10 @@ final class RemoraViewModel: ObservableObject {
     /// Steady state: netstate-only reachability (no capture — fanless, safe to poll).
     func poll() {
         let cfg = config
+        let service = self.service     // snapshot on the main actor (RemoraService is Sendable)
         Task.detached { [weak self] in
-            guard let self else { return }
-            let reachable = await self.service.ping(cfg)
-            await MainActor.run { self.isReachable = reachable }
+            let reachable = await service.ping(cfg)
+            await MainActor.run { self?.isReachable = reachable }
         }
     }
 
