@@ -3,6 +3,7 @@ import SwiftUI
 enum SentryTab: String, CaseIterable {
     case system = "System"
     case network = "Network"
+    case remora = "Remora"
     case notifications = "Alerts"
     case settings = "Settings"
 
@@ -10,6 +11,7 @@ enum SentryTab: String, CaseIterable {
         switch self {
         case .system: return "cpu"
         case .network: return "network"
+        case .remora: return "dot.radiowaves.left.and.right"
         case .notifications: return "bell"
         case .settings: return "gearshape"
         }
@@ -22,6 +24,7 @@ struct MenuBarView: View {
     @ObservedObject var settingsVM: SettingsViewModel
     @ObservedObject var ruleStore: ConnectionRuleStore
     @ObservedObject var notificationLog: NotificationLog
+    @ObservedObject var remoraVM: RemoraViewModel
     @State private var selectedTab: SentryTab = .system
 
     var body: some View {
@@ -39,6 +42,9 @@ struct MenuBarView: View {
 
                 NetworkMonitorView(viewModel: networkVM)
                     .tag(SentryTab.network)
+
+                VerdictView(viewModel: remoraVM)
+                    .tag(SentryTab.remora)
 
                 NotificationLogView(notificationLog: notificationLog)
                     .tag(SentryTab.notifications)

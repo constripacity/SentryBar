@@ -115,6 +115,12 @@ struct SettingsView: View {
                     .padding(.leading, 16)
                     .help("Alert when a process uses excessive bandwidth in a single interval")
 
+                Toggle("Remora verdicts", isOn: $viewModel.appSettings.notifyOnRemoraVerdict)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 16)
+                    .help("Alert when Remora rates the wire high/critical risk")
+
                 if viewModel.appSettings.notifyOnHighBandwidth {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {

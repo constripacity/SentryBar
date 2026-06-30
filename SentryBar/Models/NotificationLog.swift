@@ -5,6 +5,7 @@ enum NotificationType: String, CaseIterable {
     case battery
     case suspicious
     case bandwidth
+    case remora
 
     var icon: String {
         switch self {
@@ -12,6 +13,7 @@ enum NotificationType: String, CaseIterable {
         case .battery:    return "battery.25"
         case .suspicious: return "exclamationmark.triangle.fill"
         case .bandwidth:  return "arrow.up.arrow.down.circle.fill"
+        case .remora:     return "shield.lefthalf.filled"
         }
     }
 
@@ -21,6 +23,7 @@ enum NotificationType: String, CaseIterable {
         case .battery:    return "Battery"
         case .suspicious: return "Suspicious"
         case .bandwidth:  return "Bandwidth"
+        case .remora:     return "Remora"
         }
     }
 }

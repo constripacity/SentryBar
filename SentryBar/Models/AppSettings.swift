@@ -37,4 +37,21 @@ final class AppSettings: ObservableObject {
 
     @AppStorage("com.sentrybar.menuBarIcon")
     var menuBarIcon: String = "shield.checkered"
+
+    // MARK: - Remora Bar (wire-level triage engine bridge)
+
+    @AppStorage("com.sentrybar.refreshIntervalRemora")
+    var refreshIntervalRemora: Double = 15.0
+
+    @AppStorage("com.sentrybar.remoraPort")
+    var remoraPort: Int = 8099
+
+    @AppStorage("com.sentrybar.remoraToken")
+    var remoraToken: String = ""
+
+    @AppStorage("com.sentrybar.remoraInterface")
+    var remoraInterface: String = "en0"
+
+    @AppStorage("com.sentrybar.notifyOnRemoraVerdict")
+    var notifyOnRemoraVerdict: Bool = true
 }

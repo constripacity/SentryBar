@@ -26,5 +26,11 @@
     <string>13.0</string>
     <key>NSHumanReadableCopyright</key>
     <string>Copyright © 2026 constripacity. All rights reserved.</string>
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <!-- Remora Bar talks to the local Remora engine over loopback (127.0.0.1) HTTP. -->
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>

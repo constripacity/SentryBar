@@ -161,6 +161,7 @@ struct NotificationLogView: View {
         case .battery:    return .yellow
         case .suspicious: return .red
         case .bandwidth:  return .purple
+        case .remora:     return .blue
         }
     }
 }
