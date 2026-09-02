@@ -9,9 +9,13 @@ struct NetworkMonitorView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 12) {
+                if let problem = viewModel.readingProblem {
+                    readingProblemBanner(problem)
+                }
                 if viewModel.suspiciousCount > 0 {
                     suspiciousAlertBanner
                 }
+                baselineStatusRow
                 summaryCard
                 dataUsageCard
                 topConsumersCard
@@ -19,14 +23,77 @@ struct NetworkMonitorView: View {
             }
             .padding(16)
         }
-        .alert("Terminate Process?", isPresented: $showKillConfirmation, presenting: connectionToKill) { connection in
+        .alert("Quit this process?", isPresented: $showKillConfirmation, presenting: connectionToKill) { connection in
             Button("Cancel", role: .cancel) {}
-            Button("Terminate", role: .destructive) {
-                viewModel.killProcess(pid: connection.pid)
+            Button("Quit it", role: .destructive) {
+                viewModel.terminate(connection: connection)
             }
         } message: { connection in
-            Text("This will terminate \"\(connection.processName)\" (PID \(connection.pid)). The process may lose unsaved data.")
+            Text(
+                "SentryBar will ask \"\(connection.processName)\" (PID \(connection.pid)) to quit. "
+                + "Unsaved work in it may be lost.\n\n"
+                + "This only signals processes you own, and it checks the PID still belongs to "
+                + "this process before sending anything."
+            )
         }
+        .alert(
+            "Could not quit that process",
+            isPresented: Binding(
+                get: {
+                    if case .some(let outcome) = viewModel.lastTerminateOutcome {
+                        return !outcome.succeeded
+                    }
+                    return false
+                },
+                set: { if !$0 { viewModel.lastTerminateOutcome = nil } }
+            ),
+            presenting: viewModel.lastTerminateOutcome
+        ) { _ in
+            Button("OK", role: .cancel) { viewModel.lastTerminateOutcome = nil }
+        } message: { outcome in
+            Text(outcome.message)
+        }
+    }
+
+    // MARK: - Honest status
+
+    /// Says what the baseline actually knows, rather than implying certainty it
+    /// has not earned yet.
+    private var baselineStatusRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: viewModel.baseline.isWarmedUp ? "checkmark.seal" : "hourglass")
+                .foregroundStyle(.secondary)
+            Text(viewModel.baselineStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(viewModel.baselineStatus)
+    }
+
+    /// Shown when a system reading failed, so an empty list is never mistaken
+    /// for "nothing is connected".
+    private func readingProblemBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Could not read connections")
+                    .font(.subheadline.weight(.semibold))
+                Text(message)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - Suspicious Alert Banner

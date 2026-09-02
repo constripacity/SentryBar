@@ -1,240 +1,203 @@
 import XCTest
 @testable import SentryBar
 
+/// `lsof -F` field-output parsing.
+///
+/// The previous parser split the default table on whitespace and indexed fixed
+/// column numbers. That breaks whenever a process name contains a space, or a
+/// column is wide enough to shift the rest of the row — both of which happen on
+/// a real Mac ("Google Chrome Helper", long IPv6 addresses). Field output has
+/// one `<tag><value>` per line and cannot shift.
 final class NetworkServiceTests: XCTestCase {
 
     let service = NetworkService()
 
-    // MARK: - parseLsofOutput
+    // MARK: - Field output
 
-    func testParseLsofTypicalLine() {
-        let output = "Safari    1234  user   15u  IPv4 0x1234  0t0  TCP 192.168.1.100:52341->142.250.80.46:443 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
+    func testParsesASingleEstablishedConnection() {
+        let output = """
+        p1234
+        cSafari
+        f15
+        PTCP
+        n192.168.1.100:52341->142.250.80.46:443
+        TST=ESTABLISHED
+        """
+        let connections = service.parseLsofFieldOutput(output)
 
         XCTAssertEqual(connections.count, 1)
-        let conn = connections[0]
+        guard let conn = connections.first else {
+            return XCTFail("expected one connection")
+        }
         XCTAssertEqual(conn.processName, "Safari")
         XCTAssertEqual(conn.pid, 1234)
         XCTAssertEqual(conn.protocol, "TCP")
         XCTAssertEqual(conn.remoteAddress, "142.250.80.46")
         XCTAssertEqual(conn.remotePort, "443")
         XCTAssertEqual(conn.state, "ESTABLISHED")
-        XCTAssertTrue(conn.canKill)
-        XCTAssertFalse(conn.heuristicSuspicious)
     }
 
-    func testParseLsofMultipleLines() {
+    func testProcessNamesContainingSpacesSurvive() {
+        // The old whitespace-splitting parser turned this into "Google".
         let output = """
-        Safari    1234  user   15u  IPv4 0x1234  0t0  TCP 192.168.1.100:52341->142.250.80.46:443 (ESTABLISHED)
-        Slack     5678  user   20u  IPv4 0x5678  0t0  TCP 192.168.1.100:52342->34.107.243.93:443 (ESTABLISHED)
+        p900
+        cGoogle Chrome Helper
+        f7
+        PTCP
+        n10.0.0.5:60001->172.217.16.142:443
+        TST=ESTABLISHED
         """
-        let connections = service.parseLsofOutput(output)
+        let connections = service.parseLsofFieldOutput(output)
+        XCTAssertEqual(connections.first?.processName, "Google Chrome Helper")
+    }
+
+    func testOneProcessWithSeveralSockets() {
+        let output = """
+        p1234
+        cSafari
+        f15
+        PTCP
+        n192.168.1.100:52341->142.250.80.46:443
+        TST=ESTABLISHED
+        f16
+        PTCP
+        n192.168.1.100:52342->140.82.121.4:443
+        TST=ESTABLISHED
+        """
+        let connections = service.parseLsofFieldOutput(output)
         XCTAssertEqual(connections.count, 2)
-        XCTAssertEqual(connections[0].processName, "Safari")
-        XCTAssertEqual(connections[1].processName, "Slack")
+        XCTAssertTrue(connections.allSatisfy { $0.processName == "Safari" })
+        XCTAssertEqual(Set(connections.map(\.remoteAddress)), ["142.250.80.46", "140.82.121.4"])
     }
 
-    func testParseLsofEmptyOutput() {
-        let connections = service.parseLsofOutput("")
-        XCTAssertTrue(connections.isEmpty)
-    }
-
-    func testParseLsofMalformedLine() {
-        let output = "short line"
-        let connections = service.parseLsofOutput(output)
-        XCTAssertTrue(connections.isEmpty)
-    }
-
-    func testParseLsofSuspiciousPort() {
-        let output = "evil_app  999  user   5u  IPv4 0xabc  0t0  TCP 10.0.0.1:12345->1.2.3.4:4444 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertTrue(connections[0].heuristicSuspicious)
-        XCTAssertEqual(connections[0].remotePort, "4444")
-    }
-
-    func testParseLsofSystemProcess() {
-        let output = "launchd   1     root   10u  IPv4 0x1111  0t0  TCP 10.0.0.1:443->1.2.3.4:443 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertFalse(connections[0].canKill, "System process should not be killable")
-    }
-
-    func testParseLsofUDP() {
-        let output = "mDNSResp  100  user   8u  IPv4 0x2222  0t0  UDP 10.0.0.1:5353->224.0.0.251:5353 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertEqual(connections[0].protocol, "UDP")
-    }
-
-    // MARK: - parseLsofOutput Edge Cases
-
-    func testParseLsofEscapedProcessName() {
-        let output = "Brave\\x20 3401  user   24u  IPv4 0x1234  0t0  TCP 192.168.1.103:49398->140.82.114.22:443 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertEqual(connections[0].processName, "Brave ")
-        XCTAssertEqual(connections[0].remoteAddress, "140.82.114.22")
-        XCTAssertEqual(connections[0].remotePort, "443")
-    }
-
-    func testParseLsofIPv6Connection() {
-        let output = "rapportd  652  user   16u  IPv6 0xb5dd  0t0  TCP [2001:db8::1:c2c:e5f5:7f3e:3dd6]:49310->[2001:db8::2:a5cf:9f62:318:9a62]:59232 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertEqual(connections[0].processName, "rapportd")
-        XCTAssertEqual(connections[0].remoteAddress, "2001:db8::2:a5cf:9f62:318:9a62")
-        XCTAssertEqual(connections[0].remotePort, "59232")
-    }
-
-    func testParseLsofExtractsState() {
-        let output = "Safari    1234  user   15u  IPv4 0x1234  0t0  TCP 192.168.1.100:52341->142.250.80.46:443 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections[0].state, "ESTABLISHED")
-    }
-
-    func testParseLsofCloseWaitState() {
-        let output = "Safari    1234  user   15u  IPv4 0x1234  0t0  TCP 192.168.1.100:52341->142.250.80.46:443 (CLOSE_WAIT)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertEqual(connections[0].state, "CLOSE_WAIT")
-    }
-
-    func testParseLsofNumericProcessName() {
-        let output = "2.1.63    3104  user   11u  IPv4 0x1234  0t0  TCP 192.168.1.103:49393->160.79.104.10:443 (ESTABLISHED)"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertEqual(connections[0].processName, "2.1.63")
-        XCTAssertEqual(connections[0].pid, 3104)
-    }
-
-    func testParseLsofNoStateField() {
-        let output = "Safari    1234  user   15u  IPv4 0x1234  0t0  TCP 192.168.1.100:52341->142.250.80.46:443"
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 1)
-        XCTAssertEqual(connections[0].state, "UNKNOWN")
-        XCTAssertEqual(connections[0].remotePort, "443")
-    }
-
-    func testParseLsofRealMultiLineOutput() {
+    func testIPv6AddressesKeepTheirColons() {
         let output = """
-        rapportd   652 user   16u  IPv6 0xb5dd8dfd29ef617e      0t0  TCP [2001:db8::1:c2c:e5f5:7f3e:3dd6]:49310->[2001:db8::2:a5cf:9f62:318:9a62]:59232 (ESTABLISHED)
-        2.1.63    3104 user   18u  IPv4 0x66254c2ff5539946      0t0  TCP 192.168.1.103:49393->160.79.104.10:443 (ESTABLISHED)
-        Brave\\x20 3401 user   24u  IPv4 0x179d144b658eecd6      0t0  TCP 192.168.1.103:49398->140.82.114.22:443 (ESTABLISHED)
+        p2000
+        cMail
+        f9
+        PTCP
+        n[2601:646:4000::1]:52341->[2607:f8b0:4005:80a::200e]:993
+        TST=ESTABLISHED
         """
-        let connections = service.parseLsofOutput(output)
-
-        XCTAssertEqual(connections.count, 3)
-        XCTAssertEqual(connections[0].processName, "rapportd")
-        XCTAssertEqual(connections[0].remoteAddress, "2001:db8::2:a5cf:9f62:318:9a62")
-        XCTAssertEqual(connections[1].processName, "2.1.63")
-        XCTAssertEqual(connections[1].remoteAddress, "160.79.104.10")
-        XCTAssertEqual(connections[2].processName, "Brave ")
-        XCTAssertEqual(connections[2].remoteAddress, "140.82.114.22")
+        let connections = service.parseLsofFieldOutput(output)
+        XCTAssertEqual(connections.first?.remoteAddress, "2607:f8b0:4005:80a::200e")
+        XCTAssertEqual(connections.first?.remotePort, "993")
     }
 
-    // MARK: - parseConnectionString
-
-    func testParseConnectionStringWithArrow() {
-        let result = service.parseConnectionString("192.168.1.100:52341->142.250.80.46:443")
-        XCTAssertEqual(result.address, "142.250.80.46")
-        XCTAssertEqual(result.port, "443")
-    }
-
-    func testParseConnectionStringWithoutArrow() {
-        let result = service.parseConnectionString("142.250.80.46:443")
-        XCTAssertEqual(result.address, "142.250.80.46")
-        XCTAssertEqual(result.port, "443")
-    }
-
-    func testParseConnectionStringNoPort() {
-        let result = service.parseConnectionString("noport")
-        XCTAssertEqual(result.address, "noport")
-        XCTAssertEqual(result.port, "?")
-    }
-
-    func testParseConnectionStringIPv6() {
-        let result = service.parseConnectionString("[2001:db8::2:a5cf:9f62:318:9a62]:59232")
-        XCTAssertEqual(result.address, "2001:db8::2:a5cf:9f62:318:9a62")
-        XCTAssertEqual(result.port, "59232")
-    }
-
-    func testParseConnectionStringIPv6Arrow() {
-        let result = service.parseConnectionString("[2001:db8::1:c2c:e5f5:7f3e:3dd6]:49310->[2001:db8::2:a5cf:9f62:318:9a62]:59232")
-        XCTAssertEqual(result.address, "2001:db8::2:a5cf:9f62:318:9a62")
-        XCTAssertEqual(result.port, "59232")
-    }
-
-    func testParseConnectionStringWildcard() {
-        let result = service.parseConnectionString("*:*")
-        XCTAssertEqual(result.address, "*")
-        XCTAssertEqual(result.port, "*")
-    }
-
-    // MARK: - unescapeLsof
-
-    func testUnescapeLsofSpace() {
-        XCTAssertEqual(service.unescapeLsof("Brave\\x20"), "Brave ")
-    }
-
-    func testUnescapeLsofNoEscapes() {
-        XCTAssertEqual(service.unescapeLsof("Safari"), "Safari")
-    }
-
-    func testUnescapeLsofMultipleEscapes() {
-        XCTAssertEqual(service.unescapeLsof("A\\x20B\\x20C"), "A B C")
-    }
-
-    func testUnescapeLsofTab() {
-        XCTAssertEqual(service.unescapeLsof("App\\x09Name"), "App\tName")
-    }
-
-    // MARK: - parsePsOutput
-
-    func testParsePsOutput() {
+    func testListeningSocketsAreExcludedByDefault() {
         let output = """
-          PID COMM              %CPU
-          100 /usr/bin/Safari    12.5
-          200 /usr/bin/Slack      3.2
+        p400
+        cnginx
+        f6
+        PTCP
+        n*:8080
+        TST=LISTEN
+        """
+        XCTAssertTrue(service.parseLsofFieldOutput(output).isEmpty)
+        XCTAssertEqual(service.parseLsofFieldOutput(output, includeListening: true).count, 1)
+    }
+
+    func testTransientStatesAreIgnored() {
+        let output = """
+        p777
+        cSafari
+        f4
+        PTCP
+        n10.0.0.5:1234->1.2.3.4:443
+        TST=TIME_WAIT
+        """
+        XCTAssertTrue(service.parseLsofFieldOutput(output).isEmpty)
+    }
+
+    func testEmptyAndGarbageInputProduceNothing() {
+        XCTAssertTrue(service.parseLsofFieldOutput("").isEmpty)
+        XCTAssertTrue(service.parseLsofFieldOutput("not lsof output at all\n\n").isEmpty)
+    }
+
+    func testSystemProcessesAreNotKillable() {
+        let output = """
+        p1
+        claunchd
+        f3
+        PTCP
+        n10.0.0.5:100->1.2.3.4:443
+        TST=ESTABLISHED
+        """
+        XCTAssertEqual(service.parseLsofFieldOutput(output).first?.canKill, false)
+    }
+
+    func testNothingIsFlaggedByTheParserItself() {
+        // Suspicion now comes from ConnectionBaseline, not from the parser.
+        let output = """
+        p1234
+        cSomeUnknownApp
+        f15
+        PTCP
+        n10.0.0.5:52341->1.2.3.4:54321
+        TST=ESTABLISHED
+        """
+        XCTAssertEqual(service.parseLsofFieldOutput(output).first?.heuristicSuspicious, false)
+    }
+
+    // MARK: - Connection strings
+
+    func testParseConnectionString() {
+        XCTAssertEqual(service.parseConnectionString("1.2.3.4:5678").address, "1.2.3.4")
+        XCTAssertEqual(service.parseConnectionString("1.2.3.4:5678").port, "5678")
+        XCTAssertEqual(service.parseConnectionString("10.0.0.1:80->1.2.3.4:443").address, "1.2.3.4")
+        XCTAssertEqual(service.parseConnectionString("[::1]:8080").address, "::1")
+    }
+
+    // MARK: - ps output
+
+    func testParsePsOutputHandlesNamesWithSpaces() {
+        let output = """
+          PID COMM             %CPU
+          1234 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome  45.2
+          5678 /usr/bin/idle     0.0
         """
         let processes = service.parsePsOutput(output)
-        XCTAssertEqual(processes.count, 2)
-        XCTAssertEqual(processes[0].name, "Safari")
-        XCTAssertEqual(processes[0].pid, 100)
-        XCTAssertEqual(processes[0].cpuUsage, 12.5)
-        XCTAssertEqual(processes[1].name, "Slack")
+        XCTAssertEqual(processes.count, 1) // the 0.0 row is dropped
+        XCTAssertEqual(processes.first?.name, "Google Chrome")
+        XCTAssertEqual(processes.first?.cpuUsage, 45.2)
     }
 
-    func testParsePsOutputSkipsZeroCPU() {
-        let output = """
-          PID COMM              %CPU
-          100 /usr/bin/Safari    0.0
-        """
-        let processes = service.parsePsOutput(output)
-        XCTAssertTrue(processes.isEmpty)
+    // MARK: - lsof escapes
+
+    func testUnescapeLsofHexSequences() {
+        XCTAssertEqual(service.unescapeLsof("My\\x20App"), "My App")
+        XCTAssertEqual(service.unescapeLsof("Plain"), "Plain")
+        XCTAssertEqual(service.unescapeLsof("Bad\\xZZ"), "Bad\\xZZ")
     }
 
-    func testParsePsOutputEmpty() {
-        let processes = service.parsePsOutput("")
-        XCTAssertTrue(processes.isEmpty)
+    // MARK: - Terminating
+
+    func testTerminateRefusesPidZeroAndOne() {
+        XCTAssertFalse(service.terminate(pid: 0, expectedName: "x").succeeded)
+        XCTAssertFalse(service.terminate(pid: 1, expectedName: "launchd").succeeded)
     }
 
-    func testParsePsOutputExtractsLastPathComponent() {
-        let output = """
-          PID COMM              %CPU
-          100 /System/Library/Frameworks/Something/Safari    5.0
-        """
-        let processes = service.parsePsOutput(output)
-        XCTAssertEqual(processes.count, 1)
-        XCTAssertEqual(processes[0].name, "Safari")
+    func testTerminateRefusesWhenTheNameNoLongerMatches() {
+        // Our own process definitely exists, and is definitely not named this.
+        let outcome = service.terminate(
+            pid: ProcessInfo.processInfo.processIdentifier,
+            expectedName: "definitely-not-this-process"
+        )
+        XCTAssertFalse(outcome.succeeded)
+        if case let .refused(reason) = outcome {
+            XCTAssertTrue(reason.contains("reused") || reason.contains("not"))
+        } else {
+            XCTFail("expected a refusal, got \(outcome)")
+        }
+    }
+
+    func testProcessInfoReadsOurOwnProcess() {
+        let info = service.processInfo(pid: ProcessInfo.processInfo.processIdentifier)
+        XCTAssertNotNil(info)
+        XCTAssertEqual(info?.uid, getuid())
+    }
+
+    func testProcessInfoReturnsNilForAnImpossiblePid() {
+        XCTAssertNil(service.processInfo(pid: 999_999))
     }
 }

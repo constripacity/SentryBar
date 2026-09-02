@@ -21,11 +21,31 @@ final class NetworkViewModel: ObservableObject {
     private var currentInterval: Double = 0
     private var previouslySeenPIDs: Set<Int32> = []
     private var refreshCount: Int = 0
-    private var bandwidthAlertedProcesses: Set<String> = []
     private let notificationLog: NotificationLog
-    private var lastSuspiciousAlertTime: Date?
-    private var lastBandwidthAlertTime: Date?
-    private let notificationCooldown: TimeInterval = 60 // seconds between alerts of same type
+
+    /// What normal looks like on *this* Mac. See `ConnectionBaseline`.
+    let baseline: ConnectionBaseline
+    /// Decides what actually reaches Notification Center: deduplication, repeat
+    /// intervals, a global rate limit and snoozes. This replaces a pair of
+    /// `lastAlertTime` fields and a flat 60-second cooldown, which meant a
+    /// machine in a steady bad state produced one notification per interval
+    /// forever, and two unrelated conditions could suppress each other.
+    let alerts = AlertEngine()
+
+    /// Findings from the most recent refresh, newest first.
+    @Published private(set) var baselineFindings: [BaselineFinding] = []
+    /// What the baseline holds, for the Settings list.
+    ///
+    /// Published rather than computed on demand: `ConnectionBaseline` is a
+    /// plain class, so a view reading through it would never be told the value
+    /// changed. `baselineStatus` has the same problem and is refreshed here
+    /// too.
+    @Published private(set) var learnedProcesses: [LearnedProcess] = []
+    @Published private(set) var baselineStatus: String = ""
+    /// A message to show instead of an empty list when a reading failed.
+    @Published private(set) var readingProblem: String?
+    /// The outcome of the most recent attempt to end a process.
+    @Published var lastTerminateOutcome: TerminateOutcome?
 
     var suspiciousCount: Int {
         connections.filter(\.isSuspicious).count
@@ -69,11 +89,52 @@ final class NetworkViewModel: ObservableObject {
         connections.sorted { a, b in sortPriority(a) < sortPriority(b) }
     }
 
-    init(appSettings: AppSettings, ruleStore: ConnectionRuleStore, notificationLog: NotificationLog) {
+    init(
+        appSettings: AppSettings,
+        ruleStore: ConnectionRuleStore,
+        notificationLog: NotificationLog,
+        baseline: ConnectionBaseline = ConnectionBaseline()
+    ) {
         self.appSettings = appSettings
         self.ruleStore = ruleStore
         self.notificationLog = notificationLog
+        self.baseline = baseline
         startMonitoring()
+    }
+
+    /// How far through its learning period the baseline is, described honestly
+    /// rather than pretending it knows things it does not.
+    private func describeBaseline() -> String {
+        if baseline.isWarmedUp {
+            return "Learned \(baseline.knownEndpointCount) destinations. "
+                 + "New ones are flagged."
+        }
+        let percent = Int(baseline.learningProgress * 100)
+        return "Still learning what is normal (\(percent)%). "
+             + "Nothing is flagged as new until this finishes."
+    }
+
+    private func refreshBaselineSummary() {
+        baselineStatus = describeBaseline()
+        learnedProcesses = baseline.learnedProcesses()
+    }
+
+    /// Forget everything and start the learning period again.
+    ///
+    /// The control for this lives in Settings. It matters after a false start
+    /// — the baseline learned during a week of unusual activity is worse than
+    /// no baseline, because it has quietly accepted the unusual as normal.
+    func resetBaseline() {
+        baseline.reset()
+        baselineFindings = []
+        refreshBaselineSummary()
+    }
+
+    /// Forget one process, for a legitimate app that changed its endpoints.
+    func forgetBaseline(process: String) {
+        baseline.forget(process: process)
+        baselineFindings.removeAll { $0.fingerprint.process == process }
+        refreshBaselineSummary()
     }
 
     func startMonitoring() {
@@ -142,20 +203,32 @@ final class NetworkViewModel: ObservableObject {
                     return c
                 }
 
-                // Suspicious connection alerts
-                let currentPIDs = Set(classified.map(\.pid))
-                let newBlocked = classified.filter { $0.userClassification == .blocked && !self.previouslySeenPIDs.contains($0.pid) }
-                for conn in newBlocked {
-                    let rule = self.ruleStore.ruleFor(connection: conn)
-                    self.sendSuspiciousAlert(count: 1, note: rule?.note, processName: conn.processName)
+                self.readingProblem = self.networkService.lastResult.userFacingMessage
+
+                // Learn from what is on the wire, and find out what is new. Only
+                // external connections are baselined: a link to the printer at
+                // 192.168.1.30 is not an anomaly worth anyone's attention.
+                let external = classified.filter(\.isExternal)
+                let findings = self.baseline.observe(external)
+                self.baselineFindings = findings
+
+                let flagged = Set(findings.map(\.fingerprint))
+                let annotated = classified.map { conn -> NetworkConnection in
+                    var c = conn
+                    if c.userClassification == nil {
+                        let fingerprint = ConnectionFingerprint(
+                            process: c.processName,
+                            address: c.remoteAddress,
+                            port: c.remotePort
+                        )
+                        c.heuristicSuspicious = flagged.contains(fingerprint)
+                    }
+                    return c
                 }
-                let newUnclassifiedSuspicious = classified.filter {
-                    $0.userClassification == nil && $0.heuristicSuspicious && !self.previouslySeenPIDs.contains($0.pid)
-                }
-                if !newUnclassifiedSuspicious.isEmpty {
-                    self.sendSuspiciousAlert(count: newUnclassifiedSuspicious.count, note: nil, processName: nil)
-                }
-                self.previouslySeenPIDs = currentPIDs
+
+                self.refreshBaselineSummary()
+                self.raiseConnectionAlerts(for: annotated, findings: findings)
+                self.previouslySeenPIDs = Set(annotated.map(\.pid))
 
                 // Update bandwidth
                 if shouldMeasureBandwidth {
@@ -179,18 +252,33 @@ final class NetworkViewModel: ObservableObject {
                     self.checkBandwidthAlerts(bandwidth)
                 }
 
-                self.connections = classified
+                self.connections = annotated
             }
         }
     }
 
-    func killProcess(pid: Int32) {
+    /// Asks a process to quit.
+    ///
+    /// The process's name is passed alongside its PID so the service can refuse
+    /// if the number has since been recycled by something else — see
+    /// `NetworkService.terminate(pid:expectedName:)`. The outcome is published
+    /// rather than swallowed, because "nothing happened and nobody said why" is
+    /// the worst possible response to a button that ends processes.
+    func terminate(connection: NetworkConnection) {
+        let pid = connection.pid
+        let name = connection.processName
         Task.detached { [weak self] in
             guard let self else { return }
-            let success = await self.networkService.killProcess(pid: pid)
-            if success {
-                await MainActor.run {
+            let outcome = await self.networkService.terminate(pid: pid, expectedName: name)
+            await MainActor.run {
+                self.lastTerminateOutcome = outcome
+                if outcome.succeeded {
                     self.connections.removeAll { $0.pid == pid }
+                    self.notificationLog.add(
+                        type: .suspicious,
+                        title: "Asked \(name) to quit",
+                        body: "SentryBar sent SIGTERM to PID \(pid)."
+                    )
                 }
             }
         }
@@ -241,59 +329,131 @@ final class NetworkViewModel: ObservableObject {
         guard appSettings.showNotifications, appSettings.notifyOnHighBandwidth else { return }
         let thresholdBytes = UInt64(appSettings.highBandwidthThresholdMB) * 1024 * 1024
 
-        for process in snapshot.processes {
-            if process.totalBytes > thresholdBytes, !bandwidthAlertedProcesses.contains(process.processName) {
-                bandwidthAlertedProcesses.insert(process.processName)
-                sendBandwidthAlert(processName: process.processName, bytes: process.totalBytes)
-            } else if process.totalBytes <= thresholdBytes {
-                bandwidthAlertedProcesses.remove(process.processName)
-            }
+        var stillOver: Set<String> = []
+        for process in snapshot.processes where process.totalBytes > thresholdBytes {
+            let key = "bandwidth:\(process.processName)"
+            stillOver.insert(key)
+            let rate = snapshot.duration > 0
+                ? formatRate(Double(process.totalBytes) / snapshot.duration)
+                : formatBytes(process.totalBytes)
+            deliver(
+                MonitorAlert(
+                    key: key,
+                    type: .bandwidth,
+                    severity: .notice,
+                    title: "\(process.processName) is using a lot of bandwidth",
+                    body: "\(process.processName) moved \(formatBytes(process.totalBytes)) "
+                        + "in the last sample (\(rate)).",
+                    suggestion: "If this is unexpected, check what it is connected to in the "
+                              + "Network tab before ending it."
+                )
+            )
+        }
+        // Anything no longer over the threshold stops being an active alert, so
+        // the next time it happens it is genuinely new.
+        for key in alerts.active.keys where key.hasPrefix("bandwidth:") && !stillOver.contains(key) {
+            alerts.clear(key: key)
         }
     }
 
-    // MARK: - Notifications
-
-    private func sendSuspiciousAlert(count: Int, note: String?, processName: String?) {
+    /// Turns rule matches and baseline findings into alerts.
+    private func raiseConnectionAlerts(
+        for connections: [NetworkConnection], findings: [BaselineFinding]
+    ) {
         guard appSettings.showNotifications, appSettings.notifyOnSuspiciousConnection else { return }
 
-        // Rate limiting: skip if we sent a suspicious alert within the cooldown window
-        if let lastTime = lastSuspiciousAlertTime, Date().timeIntervalSince(lastTime) < notificationCooldown {
-            return
-        }
-        lastSuspiciousAlertTime = Date()
+        var live: Set<String> = []
 
-        let content = UNMutableNotificationContent()
-        content.title = "SentryBar: Suspicious Connections"
-        if let name = processName, let note {
-            content.body = "Blocked connection from \(name): \(note)"
-        } else if let name = processName {
-            content.body = "Blocked connection detected from \(name)."
-        } else {
-            content.body = "\(count) suspicious outbound connection(s) detected. Tap to review."
+        for conn in connections where conn.userClassification == .blocked {
+            live.insert(conn.alertKey)
+            let note = ruleStore.ruleFor(connection: conn)?.note
+            deliver(
+                MonitorAlert(
+                    key: conn.alertKey,
+                    type: .suspicious,
+                    severity: .warning,
+                    title: "\(conn.processName) connected to a blocked destination",
+                    body: note.map { "\(conn.remoteAddress):\(conn.remotePort) — \($0)" }
+                        ?? "\(conn.remoteAddress):\(conn.remotePort) matches one of your block rules.",
+                    suggestion: "SentryBar watches but never blocks traffic. To actually stop "
+                              + "this connection, quit the app or use a firewall such as LuLu."
+                )
+            )
         }
-        content.sound = .default
-        let request = UNNotificationRequest(identifier: "suspicious-\(UUID().uuidString)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
-        notificationLog.add(type: .suspicious, title: content.title, body: content.body)
+
+        for finding in findings {
+            let key = "new:\(finding.fingerprint.description)"
+            live.insert(key)
+            deliver(
+                MonitorAlert(
+                    key: key,
+                    type: .suspicious,
+                    severity: .notice,
+                    title: finding.headline,
+                    body: finding.detail,
+                    suggestion: "If this is expected, right-click the connection and trust "
+                              + "\(finding.fingerprint.process) so it stops being reported."
+                )
+            )
+        }
+
+        for conn in connections where conn.isExternal {
+            guard let note = conn.protocolNote, conn.userClassification == nil else { continue }
+            let key = "protocol:\(conn.processName):\(conn.remotePort)"
+            live.insert(key)
+            deliver(
+                MonitorAlert(
+                    key: key,
+                    type: .suspicious,
+                    severity: .info,
+                    title: "\(conn.processName) is using \(conn.serviceLabel)",
+                    body: note,
+                    suggestion: "This is a statement of fact about the protocol, not an "
+                              + "accusation. Modern alternatives are encrypted."
+                )
+            )
+        }
+
+        alerts.retainOnly(
+            keys: live.union(alerts.active.keys.filter { $0.hasPrefix("bandwidth:") })
+        )
     }
 
-    private func sendBandwidthAlert(processName: String, bytes: UInt64) {
-        // Rate limiting: skip if we sent a bandwidth alert within the cooldown window
-        if let lastTime = lastBandwidthAlertTime, Date().timeIntervalSince(lastTime) < notificationCooldown {
-            return
-        }
-        lastBandwidthAlertTime = Date()
+    /// Sends an alert to Notification Center if the engine says it should be seen.
+    ///
+    /// Every decision is written to the notification log, including the
+    /// suppressions, so a user who wonders why SentryBar has gone quiet can find
+    /// out instead of assuming it is broken.
+    private func deliver(_ alert: MonitorAlert) {
+        switch alerts.raise(alert) {
+        case let .deliver(delivered):
+            let content = UNMutableNotificationContent()
+            content.title = delivered.title
+            content.body = delivered.suggestion.map { "\(delivered.body)\n\n\($0)" }
+                ?? delivered.body
+            content.sound = delivered.severity == .warning ? .default : nil
+            UNUserNotificationCenter.current().add(
+                UNNotificationRequest(
+                    identifier: delivered.key, content: content, trigger: nil
+                )
+            )
+            notificationLog.add(type: delivered.type, title: delivered.title, body: delivered.body)
 
-        let content = UNMutableNotificationContent()
-        content.title = "SentryBar: High Bandwidth"
-        let rate = currentBandwidth.duration > 0
-            ? formatRate(Double(bytes) / currentBandwidth.duration)
-            : formatBytes(bytes)
-        content.body = "\(processName) is using \(rate)."
-        content.sound = .default
-        let request = UNNotificationRequest(identifier: "bandwidth-\(UUID().uuidString)", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request)
-        notificationLog.add(type: .bandwidth, title: content.title, body: content.body)
+        case let .coalesced(key, occurrences):
+            logger("Repeat of \(key) (\(occurrences)×) — not re-notifying yet.")
+        case let .rateLimited(key, count):
+            logger("Rate limit reached (\(count) in the last few minutes); held \(key).")
+        case let .snoozed(key, until):
+            logger("\(key) is snoozed until \(until.formatted(date: .omitted, time: .shortened)).")
+        case .belowThreshold:
+            break
+        }
+    }
+
+    private func logger(_ message: String) {
+        #if DEBUG
+        print("[SentryBar alerts] \(message)")
+        #endif
     }
 
     // MARK: - Helpers
