@@ -154,12 +154,12 @@ def check_balanced(path: Path, stripped: str, failures: list[str]) -> None:
             stack.append((char, line))
         elif char in pairs:
             if not stack or stack[-1][0] != pairs[char]:
-                failures.append(f"{path.relative_to(ROOT)}:{line}: unexpected '{char}'")
+                failures.append(f"{path.relative_to(ROOT).as_posix()}:{line}: unexpected '{char}'")
                 return
             stack.pop()
     if stack:
         char, opened = stack[-1]
-        failures.append(f"{path.relative_to(ROOT)}:{opened}: '{char}' is never closed")
+        failures.append(f"{path.relative_to(ROOT).as_posix()}:{opened}: '{char}' is never closed")
 
 
 #: A leading dot excludes SwiftUI's `.system(size:)`, `.systemGray` and
@@ -174,7 +174,10 @@ PROCESS_PATTERN = re.compile(r"\bProcess\s*\(")
 
 
 def check_no_shell(path: Path, code: str, code_and_strings: str, failures: list[str]) -> None:
-    relative = str(path.relative_to(ROOT))
+    # as_posix() so the comparison with PROCESS_OWNER (a forward-slash literal)
+    # holds on Windows too, where relative_to() would otherwise use backslashes
+    # and the ProcessRunner owner-file exemption would never match.
+    relative = path.relative_to(ROOT).as_posix()
 
     # Shell paths are searched with strings intact: a literal "/bin/zsh" handed
     # to anything is the defect, and the only reason the old grep-based check
