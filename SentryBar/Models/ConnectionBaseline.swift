@@ -306,17 +306,17 @@ final class ConnectionBaseline {
             )
         }
         guard let data = try? JSONEncoder.baseline.encode(snapshot) else { return }
-        // Write to a sibling then rename, so an interrupted save cannot leave a
-        // truncated baseline behind.
-        let temporary = url.appendingPathExtension("tmp")
+        // `.atomic` writes to a sibling temp file and renames it into place, so an
+        // interrupted save cannot leave a truncated baseline behind. Unlike
+        // FileManager.replaceItemAt (which throws NSFileNoSuchFileError when the
+        // destination does not exist), this also works on the very first save.
         do {
-            try data.write(to: temporary, options: .atomic)
-            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary)
+            try data.write(to: url, options: .atomic)
             try? FileManager.default.setAttributes(
                 [.posixPermissions: 0o600], ofItemAtPath: url.path
             )
         } catch {
-            try? FileManager.default.removeItem(at: temporary)
+            // Leave any previously persisted baseline untouched.
         }
     }
 }
