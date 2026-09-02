@@ -183,7 +183,8 @@ xcodebuild build \
   -scheme SentryBar \
   -configuration Debug
 
-# Run tests (127 unit tests)
+# Run tests (142 test functions; see the inventory below —
+# none of them have ever been executed)
 xcodebuild test \
   -project SentryBar.xcodeproj \
   -scheme SentryBar
@@ -242,26 +243,49 @@ brew install sentrybar
 
 ## Testing
 
-### Current Coverage (136 tests, all passing)
-| Test Suite | Tests | Coverage Area |
-|---|---|---|
-| BatteryInfoTests | 6 | Model defaults, time formatting |
-| ThermalInfoTests | 5 | State descriptions, recommendations |
-| NetworkConnectionTests | 29 | Suspicion heuristics, classification overrides, known processes (expanded), serviceLabel mapping |
-| ConnectionRuleTests | 12 | Rule CRUD, matching by process/address/port, first-rule-wins |
-| NetworkServiceTests | 28 | lsof parsing (IPv6, escaped names, state extraction), ps parsing, connection string parsing, unescapeLsof |
-| BandwidthServiceTests | 18 | nettop parsing, process field parsing, aggregation, snapshots, rate calculation |
-| NotificationLogTests | 11 | Entry creation, ordering, ring buffer cap, clear all, notification types |
-| UpdateServiceTests | 5 | Version comparison (newer, same, older, major bump, patch bump) |
-| MenuBarIconOptionTests | 4 | Unique symbols, labels, default icon presence, minimum count |
-| UtilitiesTests | 18 | formatBytes, formatRate, Date extension, Optional extension |
+### Test inventory (142 test functions — NONE have been executed)
+
+**These tests have never run.** The v0.8.0 revival was done on Linux with no
+Swift toolchain, no Xcode and no macOS, so nothing in this repository has been
+compiled since v0.6.0. The previous version of this section read "136 tests,
+all passing"; the count was real, the "all passing" was not supported by
+anything — CI at that point ran `xcodebuild build` and never `xcodebuild test`.
+Do not repeat that claim until a run on a Mac produces it.
+
+Counted with `grep -c "func test" SentryBarTests/*.swift`:
+
+| Test suite | Test functions |
+|---|---|
+| ConnectionBaselineTests | 22 |
+| BandwidthServiceTests | 18 |
+| UtilitiesTests | 18 |
+| NetworkServiceTests | 16 |
+| AlertEngineTests | 15 |
+| ConnectionRuleTests | 12 |
+| NotificationLogTests | 11 |
+| NetworkConnectionTests | 10 |
+| BatteryInfoTests | 6 |
+| ThermalInfoTests | 5 |
+| UpdateServiceTests | 5 |
+| MenuBarIconOptionTests | 4 |
+| **Total** | **142** |
+
+What the newer suites cover: `ConnectionBaselineTests` — fingerprint
+generalisation to /24 and /48, the warm-up period, retention and the entry cap,
+persistence and file permissions, and what Settings lists.
+`AlertEngineTests` — deduplication, the repeat window, the rate limit, snoozes
+and the severity floor. `NetworkServiceTests` — `lsof -F` field parsing and
+process termination outcomes.
 
 ### Strategy
-- Unit test Services independently (mock shell output for NetworkService)
+- Unit test Services independently (feed ProcessRunner output in as fixtures)
 - Test ViewModel state transitions (e.g., suspicious count updates after refresh)
-- Test model logic (NetworkConnection.evaluateSuspicion, BatteryInfo.timeRemainingFormatted)
+- Test model logic (ConnectionBaseline, AlertEngine, BatteryInfo.timeRemainingFormatted).
+  `NetworkConnection.evaluateSuspicion` is deprecated and always returns false: the
+  allowlist-and-high-port heuristic it implemented was replaced by the learned baseline.
 - IPv6 test data uses RFC 3849 documentation addresses (2001:db8::)
-- No UI tests needed yet — focus on service/logic coverage first
+- No UI tests yet. The first job on a Mac is to make the existing suite run at all —
+  see docs/NEXT_20_COMMITS.md, commit 1.
 
 ## Git Workflow
 - **Author identity:** constripacity <constripacity@users.noreply.github.com>

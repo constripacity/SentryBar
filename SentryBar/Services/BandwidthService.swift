@@ -1,20 +1,34 @@
 import Foundation
 
-/// Measures per-process bandwidth using macOS nettop
+/// Measures per-process bandwidth using macOS `nettop`.
+///
+/// `nettop` is invoked directly rather than through a shell (see
+/// `ProcessRunner`), so its arguments are an argv vector and nothing in them can
+/// be interpreted.
 final class BandwidthService {
 
-    /// Takes a one-shot bandwidth measurement via nettop.
-    /// Runs nettop for 2 samples (first is "dirty" cumulative, second is actual delta).
-    /// Measures actual wall-clock duration for accurate rate calculation.
+    /// Whatever the last measurement produced, so the UI can explain a blank
+    /// reading instead of silently showing zero.
+    private(set) var lastResult: ToolResult = .success("")
+
+    /// Takes a one-shot bandwidth measurement.
+    ///
+    /// Two samples are requested: the first is cumulative since the process
+    /// started and is discarded, the second is the delta over the sample
+    /// interval. The wall-clock duration is measured rather than assumed,
+    /// because `nettop` startup cost varies and a hard-coded 2.0 would skew
+    /// every rate on a busy machine.
     func measureBandwidth() -> BandwidthSnapshot {
         let startTime = Date()
-        let output = Shell.run(
-            "nettop -P -d -L 2 -J bytes_in,bytes_out -t external -c",
+        let result = ProcessRunner.run(
+            .nettop,
+            ["-P", "-d", "-L", "2", "-J", "bytes_in,bytes_out", "-t", "external", "-c"],
             timeout: 15
         )
+        lastResult = result
         let duration = Date().timeIntervalSince(startTime)
-        guard !output.isEmpty else { return .empty }
-        return parseBandwidthOutput(output, duration: duration)
+        guard result.isSuccess, !result.output.isEmpty else { return .empty }
+        return parseBandwidthOutput(result.output, duration: max(duration, 0.1))
     }
 
     // MARK: - Parsing

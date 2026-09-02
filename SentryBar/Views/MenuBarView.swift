@@ -43,7 +43,7 @@ struct MenuBarView: View {
                 NotificationLogView(notificationLog: notificationLog)
                     .tag(SentryTab.notifications)
 
-                SettingsView(viewModel: settingsVM, ruleStore: ruleStore)
+                SettingsView(viewModel: settingsVM, ruleStore: ruleStore, networkViewModel: networkVM)
                     .tag(SentryTab.settings)
             }
             .tabViewStyle(.automatic)

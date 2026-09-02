@@ -13,7 +13,11 @@ struct NetworkConnection: Identifiable {
     var bytesOut: UInt64? // per-interval bandwidth (from nettop)
     let canKill: Bool
 
-    /// Effective suspicious status accounting for user classification
+    /// Effective flagged status, accounting for an explicit user rule.
+    ///
+    /// A user rule always wins. Absent one, this reflects whatever the baseline
+    /// concluded — which is `false` until the baseline has warmed up, so a fresh
+    /// install is quiet rather than alarming.
     var isSuspicious: Bool {
         switch userClassification {
         case .allowed: return false
@@ -22,8 +26,27 @@ struct NetworkConnection: Identifiable {
         }
     }
 
+    /// Whether this connection leaves the local network.
+    var isExternal: Bool { !Self.isPrivateAddress(remoteAddress) }
+
+    /// A note about the protocol in use, when there is one worth making.
+    var protocolNote: String? { Self.protocolNote(forPort: remotePort) }
+
+    /// A stable identity for alerting and rule matching. Unlike `id`, this is
+    /// the same across refreshes for the same process and destination, which is
+    /// what makes deduplication possible.
+    var alertKey: String {
+        "conn:\(processName):\(ConnectionFingerprint.generalise(address: remoteAddress)):\(remotePort)"
+    }
+
     /// Raw heuristic result (ignoring user rules)
-    let heuristicSuspicious: Bool
+    /// Whether the baseline considers this destination new for this process.
+    ///
+    /// Mutable because it is filled in *after* parsing, by
+    /// `ConnectionBaseline`. The parser deliberately knows nothing about
+    /// suspicion — that is a property of this machine's history, not of the
+    /// socket table.
+    var heuristicSuspicious: Bool
 
     /// Human-friendly label for the connection's remote port
     var serviceLabel: String {
@@ -73,59 +96,69 @@ struct NetworkConnection: Identifiable {
         "suggestd", "parsecd", "lsd", "mdworker", "usernoted"
     ]
 
-    /// Ports commonly associated with suspicious activity
-    static let suspiciousPorts: Set<String> = [
-        "4444", "5555", "6666", "1337", "31337", "8888"
+    /// Ports whose *presence* is worth a note, with the honest reason why.
+    ///
+    /// The previous version treated a fixed list of ports as "suspicious" and,
+    /// separately, flagged **any** connection above port 49152 from a process
+    /// missing from a 60-entry hard-coded allowlist. On a real Mac that second
+    /// rule fires on WebRTC, QUIC, game servers, CDNs, every Homebrew tool and
+    /// every app the list had not heard of. A monitor that cries wolf on a
+    /// hundred normal connections teaches its user to ignore it, which is worse
+    /// than not alerting at all.
+    ///
+    /// What remains here is a small set of ports where an *unencrypted* or
+    /// *administrative* protocol is in use. That is a statement of fact the user
+    /// can act on, not an accusation.
+    static let notableProtocolPorts: [String: String] = [
+        "23":   "Telnet — this connection is not encrypted",
+        "21":   "FTP — credentials on this protocol are sent in the clear",
+        "25":   "SMTP — mail submission, often unencrypted",
+        "110":  "POP3 — unencrypted mail retrieval",
+        "143":  "IMAP — unencrypted unless upgraded with STARTTLS",
+        "3389": "Remote Desktop",
+        "5900": "VNC screen sharing",
+        "445":  "SMB file sharing",
+        "22":   "SSH — an encrypted administrative session",
     ]
 
-    /// Check if a connection might be suspicious based on heuristics
-    static func evaluateSuspicion(processName: String, remotePort: String, remoteAddress: String) -> Bool {
-        // Known suspicious ports
-        if suspiciousPorts.contains(remotePort) { return true }
+    /// Whether the port carries something worth mentioning, and why.
+    static func protocolNote(forPort port: String) -> String? {
+        notableProtocolPorts[port]
+    }
 
-        // Non-standard high ports from unknown processes
-        if let port = Int(remotePort), port > 49152, !isKnownProcess(processName) {
+    /// Whether this connection leaves the local network.
+    ///
+    /// A connection to `192.168.x.x` is a printer or a NAS; a connection to a
+    /// public address is the one worth looking at. The old model made no
+    /// distinction, which is a large part of why it was noisy.
+    static func isPrivateAddress(_ address: String) -> Bool {
+        if address.hasPrefix("127.") || address == "::1" || address == "localhost" { return true }
+        if address.hasPrefix("10.") || address.hasPrefix("192.168.") { return true }
+        if address.hasPrefix("169.254.") || address.lowercased().hasPrefix("fe80:") { return true }
+        if address.hasPrefix("172.") {
+            let parts = address.split(separator: ".")
+            if parts.count > 1, let second = Int(parts[1]), (16...31).contains(second) {
+                return true
+            }
+        }
+        if address.lowercased().hasPrefix("fd") || address.lowercased().hasPrefix("fc") {
             return true
         }
-
         return false
     }
 
-    static func isKnownProcess(_ name: String) -> Bool {
-        let knownApps: Set<String> = [
-            // Browsers
-            "Safari", "Google Chrome", "Google Chrome Helper",
-            "Firefox", "Brave Browser", "Arc", "Microsoft Edge",
-            "Opera", "Vivaldi", "Orion",
-            // Communication
-            "Slack", "Discord", "Messages", "FaceTime", "zoom.us",
-            "Telegram", "WhatsApp", "Signal", "Microsoft Teams",
-            "Skype", "Webex",
-            // Email
-            "Mail", "Outlook", "Spark", "Thunderbird",
-            // Media & streaming
-            "Spotify", "Music", "Podcasts", "TV", "VLC",
-            // Cloud & sync
-            "Finder", "Dropbox", "Google Drive", "OneDrive",
-            "iCloud", "Box",
-            // Productivity
-            "Notes", "Maps", "Calendar", "Reminders",
-            "Notion", "Obsidian", "Bear",
-            // Security & VPN
-            "1Password", "Bitwarden",
-            // Development
-            "Code Helper", "node", "python3", "python", "curl",
-            "git-remote-https", "Xcode", "Docker", "Postman",
-            "npm", "yarn", "ruby", "php", "java", "go",
-            "Terminal", "iTerm2", "Warp", "ssh", "wget",
-            // Apple system apps
-            "App Store", "System Preferences", "System Settings",
-            "Preview", "TextEdit", "Photo Booth",
-            // Gaming
-            "Steam", "Steam Helper"
-        ]
-        return knownApps.contains(name) || systemProcesses.contains(name)
+    /// Deprecated. Suspicion is no longer decided by a hard-coded list; it comes
+    /// from `ConnectionBaseline`, which learns what is normal *on this machine*.
+    ///
+    /// Retained returning `false` so any remaining caller degrades to "not
+    /// suspicious" rather than to the old flood of false positives.
+    @available(*, deprecated, message: "Use ConnectionBaseline.observe(_:) instead")
+    static func evaluateSuspicion(
+        processName: String, remotePort: String, remoteAddress: String
+    ) -> Bool {
+        false
     }
+
 }
 
 /// Represents a running process with its CPU usage

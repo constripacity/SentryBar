@@ -3,7 +3,14 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var viewModel: SettingsViewModel
     @ObservedObject var ruleStore: ConnectionRuleStore
+    /// The baseline lives on the network view model, and the controls for it
+    /// belong here. Before this, `ConnectionBaseline.reset()` and
+    /// `forget(process:)` were tested but unreachable: no view could call
+    /// either, while the README told people to use "Reset baseline in
+    /// Settings".
+    @ObservedObject var networkViewModel: NetworkViewModel
     @State private var showResetConfirmation = false
+    @State private var showBaselineResetConfirmation = false
     @State private var showRulesManager = false
 
     var body: some View {
@@ -18,6 +25,7 @@ struct SettingsView: View {
                     generalSection
                     appearanceSection
                     notificationsSection
+                    baselineSection
                     connectionRulesSection
                     batterySection
                     aboutSection
@@ -323,6 +331,76 @@ struct SettingsView: View {
                         .help(option.label)
                     }
                 }
+            }
+        }
+        .padding(12)
+        .background(.background.opacity(0.6))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.gray.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Network baseline
+
+    private var baselineSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Network baseline", systemImage: "waveform.path.ecg")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+
+            Text(networkViewModel.baselineStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if networkViewModel.learnedProcesses.isEmpty {
+                Text("Nothing learned yet. SentryBar watches for a few days before it calls anything unusual.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(networkViewModel.learnedProcesses.prefix(8)) { entry in
+                    HStack(spacing: 8) {
+                        Text(entry.process)
+                            .font(.caption)
+                            .lineLimit(1)
+                        Spacer()
+                        Text("\(entry.endpoints)")
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                        Button("Forget") {
+                            networkViewModel.forgetBaseline(process: entry.process)
+                        }
+                        .font(.caption2)
+                        .buttonStyle(.borderless)
+                        .help("Forget the destinations learned for \(entry.process). Useful when a legitimate app changes where it connects.")
+                        .accessibilityLabel("Forget learned destinations for \(entry.process)")
+                    }
+                }
+                if networkViewModel.learnedProcesses.count > 8 {
+                    Text("and \(networkViewModel.learnedProcesses.count - 8) more")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Button("Reset baseline") {
+                showBaselineResetConfirmation = true
+            }
+            .font(.caption)
+            .help("Forget everything learned and start the learning period again")
+            .confirmationDialog(
+                "Forget everything SentryBar has learned?",
+                isPresented: $showBaselineResetConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("Reset baseline", role: .destructive) {
+                    networkViewModel.resetBaseline()
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The learning period starts again, and nothing is flagged as new until it finishes.")
             }
         }
         .padding(12)

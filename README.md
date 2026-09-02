@@ -1,199 +1,219 @@
-# SentryBar
+<h1 align="center">SentryBar</h1>
 
-A lightweight macOS menubar app that monitors your system health and network activity in real-time.
+<p align="center">
+  <strong>See what your Mac is talking to — from the menu bar, without installing a system extension.</strong>
+</p>
 
-Built natively with **Swift & SwiftUI** for minimal resource usage — perfect for MacBook Air users.
+<p align="center">
+  Native SwiftUI · learns what is normal for <em>your</em> machine · no telemetry, no account, no network extension
+</p>
 
-![macOS](https://img.shields.io/badge/macOS-13.0%2B-blue)
-![Swift](https://img.shields.io/badge/Swift-5.9-orange)
-![License](https://img.shields.io/badge/license-MIT-green)
-
----
-
-## Features
-
-### System Monitor
-- Battery health percentage & cycle count
-- Thermal state indicator (Nominal / Fair / Serious / Critical)
-- Top CPU-consuming processes
-- Smart alerts for thermal throttling & battery degradation
-
-### Network Monitor
-- Live view of apps making outbound connections
-- Per-app bandwidth rate tracking with sparkline charts (KB/s)
-- Top bandwidth consumers card
-- Suspicious connection detection (known bad ports + unknown process heuristics)
-- Connection allow/block rules (per process, address, or port)
-- One-click process termination with confirmation
-- High bandwidth usage alerts
-- Session data usage tracking with per-app breakdown
-
-### Settings
-- Launch at login toggle
-- Configurable refresh intervals (system & network)
-- Notification preferences (thermal, suspicious, battery, bandwidth)
-- Battery health & bandwidth alert thresholds
-- Menubar icon customization (10 SF Symbol choices)
-- Automatic update checking (checks GitHub Releases once per day)
-
-### UX
-- Lives in the menubar — zero dock clutter
-- Tabbed dropdown panel (System / Network / Alerts / Settings)
-- Color-coded status indicators
-- Native macOS notifications with rate limiting (60s cooldown per type)
-- Notification history log with type badges and timestamps
+<p align="center">
+  <a href="#what-it-does">What it does</a> ·
+  <a href="#the-honest-tradeoff">The honest tradeoff</a> ·
+  <a href="#install">Install</a> ·
+  <a href="#how-the-baseline-works">How the baseline works</a> ·
+  <a href="#privacy">Privacy</a>
+</p>
 
 ---
+
+> **Screenshot needed here.** The one to capture is a **notification firing** —
+> "Safari reached a new destination" — not a dashboard. That is the moment the
+> product exists for. Drop it at `docs/alert.png` and link it above.
+
+## What it does
+
+SentryBar sits in the menu bar and answers one question well:
+
+> **Is something on this Mac connecting somewhere it never has before?**
+
+It reads the socket table, learns which processes normally talk to which
+destinations, and tells you when that changes:
+
+```
+  Safari reached a new destination
+  Safari has used 63 other destinations over 12 days.
+  140.82.121.0/24:443 is new.
+
+  If this is expected, right-click the connection and trust Safari
+  so it stops being reported.
+```
+
+Around that it shows the context you need to judge an alert: per-process
+bandwidth, battery and thermal state, and what is using the CPU right now.
+
+## The honest tradeoff
+
+SentryBar reads `lsof` and `nettop`. It installs **no system extension** and
+never sits in the path of your traffic.
+
+**What that buys you.** It installs like a normal app. On a managed or corporate
+Mac where a system extension will never be approved, it still works. It cannot
+see, log, or interfere with the contents of your traffic, because it never
+touches it.
+
+**What it costs you, stated plainly.**
+
+- **SentryBar cannot block a connection.** It watches and warns. Connection
+  rules control what you get *told about*, not what is *allowed*.
+- Polling misses connections that open and close between refreshes.
+- It is slower than a kernel-level filter.
+
+If you want blocking, use [LuLu](https://github.com/objective-see/LuLu). The two
+compose well: LuLu is the gate, SentryBar is the log.
+
+## Where it fits
+
+| | Sees per-connection | Alerts on change | Blocks | Needs a system extension | Lives in the menu bar |
+| --- | --- | --- | --- | --- | --- |
+| [Stats](https://github.com/exelban/stats) | ✗ (totals only) | ✗ | ✗ | ✗ | ✓ |
+| [Sniffnet](https://github.com/GyulyVGC/sniffnet) | ✓ | notifications | ✗ | packet capture | ✗ (a window) |
+| [LuLu](https://github.com/objective-see/LuLu) | ✓ | per-prompt | **✓** | **✓** | ✗ |
+| [bandwhich](https://github.com/imsnif/bandwhich) | ✓ | ✗ | ✗ | ✗ (needs sudo) | ✗ (a terminal) |
+| **SentryBar** | ✓ | **✓ learned baseline** | ✗ | **✗** | ✓ |
+
+Stats is a better system monitor than SentryBar will ever be, and if that is
+what you want you should install Stats. SentryBar's system-health panel exists
+to give an alert context — "this started when the machine began thermally
+throttling" — not to compete on widgets.
+
+## How the baseline works
+
+The naive version of this feature flags any connection to a high port from a
+process that isn't on an allowlist. On a real Mac that means WebRTC, QUIC, game
+servers, every CDN and every tool you installed yourself. A monitor that cries
+wolf a hundred times a day teaches you to ignore it, which is worse than not
+alerting at all. (This is not hypothetical: it is what SentryBar's previous
+version did.)
+
+So SentryBar learns instead.
+
+1. **It watches quietly for three days.** Nothing is flagged during warm-up, and
+   the UI says so: *"Still learning what is normal (42%)."* Alerting from an
+   empty baseline is alerting on everything.
+2. **It records `(process, /24 or /48 prefix, port)`.** The subnet prefix rather
+   than the exact address, because a CDN answers from a different host every
+   time and exact addresses would make everything permanently new.
+3. **After warm-up, a combination it has never seen is reported once**, with the
+   count it is comparing against, so you can judge it.
+4. **Entries expire** after 60 days, so an app you uninstalled stops shaping the
+   baseline.
+
+It is deterministic, entirely local, and you can throw it away. **Settings →
+Network baseline** shows what has been learned, offers `Forget` per process for
+an app that legitimately changed its endpoints, and `Reset baseline` to start
+the learning period again. The file lives at
+`~/Library/Application Support/SentryBar/network-baseline.json`, mode `0600`.
+
+## Alerts that are worth reading
+
+Every alert goes through one engine with four rules:
+
+- **Deduplicated by key** — the same condition never notifies twice; the second
+  occurrence increments a counter.
+- **Repeats only every 30 minutes**, so a persistent problem reminds you
+  occasionally rather than constantly.
+- **Globally rate limited** — at most 6 notifications per 5 minutes, so a burst
+  cannot bury the machine.
+- **Snoozable** per alert or per category, with a severity floor you set.
+
+Suppressions are written to the notification log, so if SentryBar goes quiet you
+can find out *why* rather than assuming it broke.
 
 ## Install
 
-### Homebrew (recommended)
-
 ```bash
-brew tap constripacity/sentrybar
-brew install sentrybar
+brew install --cask sentrybar
 ```
 
-### One-line install
+or
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/constripacity/SentryBar/main/install.sh | bash
 ```
 
-This downloads the latest `.dmg` from GitHub Releases, installs `SentryBar.app` to `/Applications`, and cleans up automatically.
+The install script **verifies the download against the checksum published with
+the release and refuses to install without one.** It stages the new copy before
+removing the old, so an interrupted install never leaves you with nothing.
 
-### Download manually
+Requires **macOS 13 Ventura or later** (`MenuBarExtra`).
 
-1. Go to [**Releases**](https://github.com/constripacity/SentryBar/releases/latest)
-2. Download `SentryBar.dmg`
-3. Open the DMG and drag `SentryBar.app` to your Applications folder
-4. Launch SentryBar — it appears in your menubar
+### About signing
 
-### Build from source
-
-Requires macOS 13.0+, Xcode 15.0+, and [xcodegen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+**SentryBar is not code-signed or notarised.** Builds come from GitHub Actions
+against a tagged commit and the build log is public, but there is no Apple
+Developer ID behind them. Gatekeeper will refuse to open the app until you clear
+the quarantine flag yourself:
 
 ```bash
-git clone https://github.com/constripacity/SentryBar.git
-cd SentryBar
+xattr -dr com.apple.quarantine /Applications/SentryBar.app
+```
+
+The installer tells you this rather than doing it for you. A script that
+silently disarms Gatekeeper on your behalf is exactly the pattern you should
+refuse from anyone — including this one.
+
+## Privacy
+
+- **Nothing leaves your Mac.** No telemetry, no analytics, no accounts. The only
+  outbound request in the entire codebase is an update check against the GitHub
+  releases API, at most once every 24 hours, which you can turn off.
+- **The baseline never leaves your Mac**, and stores subnet prefixes rather than
+  full addresses.
+- **No packet contents are ever read.** SentryBar reads the socket table — who is
+  connected to what — and never the traffic itself. It could not read your
+  traffic if it wanted to.
+- **No elevated privileges.** SentryBar never asks for root, never installs a
+  helper tool, and only signals processes you own.
+
+## Ending a process
+
+The context menu can ask a process to quit. It sends `SIGTERM`, and before it
+does it:
+
+- confirms the PID still belongs to the process you clicked on (PIDs get
+  recycled, and signalling the wrong one is how a "kill" button becomes a bug
+  report);
+- confirms you own it — SentryBar never signals a root-owned process and never
+  asks for privileges to do so;
+- refuses for known macOS system services.
+
+If it refuses, it tells you which of those it was.
+
+## Building
+
+```bash
+brew install xcodegen
 xcodegen generate
-xcodebuild build -project SentryBar.xcodeproj -scheme SentryBar -configuration Release
+open SentryBar.xcodeproj
 ```
 
-Or open in Xcode:
+Tests: `xcodebuild test -scheme SentryBar -destination 'platform=macOS'`.
+CI runs them on every push — which it did not do before, despite the tests
+existing.
 
-```bash
-open SentryBar.xcodeproj   # Cmd+R to run
-```
+> **This release has not been compiled.** The v0.8.0 work was done on a machine
+> with no Swift toolchain and no macOS, so no source file here has been built
+> and none of the 142 test functions has been executed. What was checked
+> statically: every Swift file's brackets balance and no shell is invoked
+> outside `ProcessRunner` (`python3 scripts/swift_static_checks.py`, which CI
+> also runs). Expect to fix compile errors on the first real build; that is
+> commit 1 of [`docs/NEXT_20_COMMITS.md`](docs/NEXT_20_COMMITS.md).
 
-## Project Structure
+Architecture: SwiftUI + `MenuBarExtra`, MVVM, no third-party dependencies. Every
+external tool is invoked through `ProcessRunner` with an argv vector and **no
+shell**; CI fails the build if a `Process()` appears anywhere else.
 
-```
-SentryBar/
-├── SentryBar/
-│   ├── App/                  # App entry point & lifecycle
-│   │   └── SentryBarApp.swift
-│   ├── Models/               # Data models
-│   │   ├── AppSettings.swift
-│   │   ├── BandwidthInfo.swift
-│   │   ├── BatteryInfo.swift
-│   │   ├── ConnectionRule.swift
-│   │   ├── MenuBarIconOption.swift
-│   │   ├── NetworkConnection.swift
-│   │   ├── NotificationLog.swift
-│   │   └── ThermalInfo.swift
-│   ├── Services/             # System & network data providers
-│   │   ├── BandwidthService.swift
-│   │   ├── BatteryService.swift
-│   │   ├── NetworkService.swift
-│   │   ├── ThermalService.swift
-│   │   └── UpdateService.swift
-│   ├── ViewModels/           # Observable state managers
-│   │   ├── NetworkViewModel.swift
-│   │   ├── SettingsViewModel.swift
-│   │   └── SystemViewModel.swift
-│   ├── Views/                # SwiftUI views
-│   │   ├── MenuBarView.swift
-│   │   ├── NetworkMonitorView.swift
-│   │   ├── NotificationLogView.swift
-│   │   ├── RulesManagementView.swift
-│   │   ├── SettingsView.swift
-│   │   ├── SparklineView.swift
-│   │   ├── StatusIconView.swift
-│   │   └── SystemMonitorView.swift
-│   ├── Utilities/            # Helpers & extensions
-│   │   ├── Extensions.swift
-│   │   └── ShellHelper.swift
-│   └── Resources/
-│       ├── Assets.xcassets
-│       └── Info.plist
-├── SentryBarTests/           # 136 unit tests
-├── Casks/                    # Homebrew cask formula
-│   └── sentrybar.rb
-├── install.sh                # One-click installer
-├── project.yml               # xcodegen spec
-├── .gitignore
-├── LICENSE
-├── CLAUDE.md
-└── README.md
-```
+## What SentryBar is not
 
-## Security
-
-SentryBar runs **unsandboxed** because it needs access to system tools (`lsof`, `ps`, `nettop`, `kill`) for network and process monitoring. Security measures include:
-
-- Shell commands use only hardcoded templates with numeric-only interpolation (no string injection possible)
-- PID validation rejects system-critical processes (PID 0, 1) and root-owned processes before kill
-- Connection rules stored with restrictive file permissions (0600)
-- stderr is discarded from shell output to prevent information leakage
-- Hardened Runtime is enabled for distribution builds
-- Notification rate limiting prevents alert flooding (60s cooldown per type)
-- Update checker contacts only the public GitHub Releases API (no telemetry, no tracking)
-
-## Roadmap
-
-- [x] Menubar shell with tabbed UI
-- [x] Battery health monitoring (IOKit)
-- [x] Thermal state tracking
-- [x] Process CPU ranking
-- [x] Network connection monitoring (lsof)
-- [x] Suspicious connection detection
-- [x] Process kill with confirmation
-- [x] UNUserNotificationCenter alerts
-- [x] Settings panel (launch at login, intervals, notifications)
-- [x] Connection allow/block rules (JSON persistence)
-- [x] Bandwidth tracking (nettop)
-- [x] Rate calculation (KB/s) & sparkline visualization
-- [x] App icon
-- [x] Unit tests (136 tests)
-- [x] Notification history / log view
-- [x] One-click install (GitHub Releases + install script)
-- [x] Homebrew cask formula
-- [x] Auto-update checker (lightweight GitHub API, 24h cooldown)
-- [x] Menubar icon customization (10 SF Symbol choices)
-- [x] Notification rate limiting (60s cooldown per type)
-- [ ] Publish Homebrew tap repo
-- [ ] In-app download & install via Sparkle (if needed)
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| UI | SwiftUI + MenuBarExtra |
-| Battery | IOKit (AppleSmartBattery) |
-| Thermal | ProcessInfo.thermalState |
-| Network | lsof, nettop (via Shell.run) |
-| Settings | @AppStorage (UserDefaults) |
-| Rules | JSON (Codable) |
-| Notifications | UNUserNotificationCenter |
-| Updates | GitHub Releases API (URLSession) |
-| Build | xcodegen + xcodebuild |
-| Architecture | MVVM |
-
-## Contributing
-
-Contributions welcome! Please open an issue first to discuss proposed changes.
+- **Not a firewall.** It cannot block anything. See
+  [the tradeoff](#the-honest-tradeoff).
+- **Not malware detection.** "New destination" means new, not malicious. Most new
+  destinations are an app updating itself.
+- **Not a full system monitor.** [Stats](https://github.com/exelban/stats) is
+  better at that and you should use it if that is what you want.
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).

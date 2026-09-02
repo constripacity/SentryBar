@@ -1,68 +1,168 @@
-name: Build SentryBar
+name: CI
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: [main]
+    tags: ["v*"]
   pull_request:
-    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
 
 jobs:
-  build:
-    runs-on: macos-14  # Apple Silicon runner
-
+  test:
+    name: build and test
+    runs-on: macos-14
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Select Xcode
-      run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
 
-    - name: Install xcodegen
-      run: brew install xcodegen
+      - name: Install xcodegen
+        run: brew install xcodegen
 
-    - name: Generate Xcode project
-      run: xcodegen generate
+      - name: Generate the Xcode project
+        run: xcodegen generate
 
-    - name: Build
-      run: |
-        xcodebuild build \
-          -project SentryBar.xcodeproj \
-          -scheme SentryBar \
-          -configuration Release \
-          -destination 'platform=macOS,arch=arm64' \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
+      # The previous workflow built the app and never ran a single test, despite
+      # ~1,000 lines of them existing in the repository.
+      - name: Test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project SentryBar.xcodeproj \
+            -scheme SentryBar \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO \
+            | xcbeautify --renderer github-actions || \
+          xcodebuild test \
+            -project SentryBar.xcodeproj \
+            -scheme SentryBar \
+            -configuration Debug \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
-    - name: Archive & Create DMG
-      if: startsWith(github.ref, 'refs/tags/')
-      run: |
-        xcodebuild archive \
-          -project SentryBar.xcodeproj \
-          -scheme SentryBar \
-          -configuration Release \
-          -archivePath build/SentryBar.xcarchive \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO
+      - name: Release build
+        run: |
+          xcodebuild build \
+            -project SentryBar.xcodeproj \
+            -scheme SentryBar \
+            -configuration Release \
+            -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
 
-        # Export the .app
-        cp -R build/SentryBar.xcarchive/Products/Applications/SentryBar.app build/
+  static-checks:
+    name: static checks
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
 
-        # Create DMG
-        hdiutil create -volname "SentryBar" \
-          -srcfolder build/SentryBar.app \
-          -ov -format UDZO \
-          build/SentryBar.dmg
+      # SentryBar reads the socket table by running system tools. Everything it
+      # runs must go through ProcessRunner, which uses an argv vector and no
+      # shell. A raw Process or a shell path anywhere else is a bug.
+      #
+      # This was a `grep -rn "bin/zsh" SentryBar/`, which failed the build on
+      # ProcessRunner's own doc comment explaining what it replaced. The
+      # checker below strips comments before searching, and keeps string
+      # literals, because "/bin/zsh" in a literal is the actual defect. It also
+      # checks that every file's brackets balance, which is the only
+      # structural signal available without a compiler.
+      - name: Swift static checks
+        run: python3 scripts/swift_static_checks.py
 
-    - name: Create GitHub Release
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v2
-      with:
-        files: build/SentryBar.dmg
-        generate_release_notes: true
-        draft: false
-        prerelease: false
+      # The cask version and the project version must not drift. They did:
+      # the cask said 0.6.0 while project.yml said 0.7.0.
+      - name: Cask version matches the project version
+        run: |
+          project=$(grep 'MARKETING_VERSION' project.yml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          cask=$(grep -E '^\s*version ' Casks/sentrybar.rb | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "project.yml: $project    cask: $cask"
+          [ "$project" = "$cask" ] || { echo "::error::version drift between project.yml and Casks/sentrybar.rb"; exit 1; }
+
+  release:
+    name: release
+    needs: [test, static-checks]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo xcode-select -s /Applications/Xcode_16.2.app/Contents/Developer
+      - run: brew install xcodegen
+      - run: xcodegen generate
+
+      - name: Archive
+        run: |
+          xcodebuild archive \
+            -project SentryBar.xcodeproj \
+            -scheme SentryBar \
+            -configuration Release \
+            -archivePath build/SentryBar.xcarchive \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+          cp -R build/SentryBar.xcarchive/Products/Applications/SentryBar.app build/
+
+      - name: Create the disk image and its checksum
+        run: |
+          hdiutil create -volname "SentryBar" -srcfolder build/SentryBar.app \
+            -ov -format UDZO build/SentryBar.dmg
+          cd build
+          shasum -a 256 SentryBar.dmg > SentryBar.dmg.sha256
+          cat SentryBar.dmg.sha256
+
+      # The cask's checksum must match the artifact that was actually built.
+      # Hand-maintaining it is how it ended up stale at 0.6.0 while the project
+      # said 0.7.0.
+      - name: Update the cask checksum from the built artifact
+        run: |
+          digest=$(shasum -a 256 build/SentryBar.dmg | awk '{print $1}')
+          version="${GITHUB_REF_NAME#v}"
+          sed -i '' -E "s/^  version \".*\"$/  version \"${version}\"/" Casks/sentrybar.rb
+          sed -i '' -E "s|^  sha256 .*$|  sha256 \"${digest}\"|" Casks/sentrybar.rb
+          cp Casks/sentrybar.rb build/sentrybar.rb
+          echo "cask updated to ${version} / ${digest}"
+          cat build/sentrybar.rb | head -20
+
+      # install.sh refuses to install without this file, so publishing it is not
+      # optional.
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            build/SentryBar.dmg
+            build/SentryBar.dmg.sha256
+            build/sentrybar.rb
+          generate_release_notes: true
+          body: |
+            ## Verify your download
+
+            ```
+            shasum -a 256 -c SentryBar.dmg.sha256
+            ```
+
+            ## This build is NOT signed or notarised
+
+            It is produced by GitHub Actions from the tagged commit and the build
+            log is public, but it carries no Apple Developer ID. Gatekeeper will
+            refuse to open it until you clear the quarantine flag:
+
+            ```
+            xattr -dr com.apple.quarantine /Applications/SentryBar.app
+            ```
+
+            Signing and notarisation require a paid Apple Developer account.
+            Until this project has one, that step is honestly missing rather
+            than quietly worked around.
+
+            ## What SentryBar does and does not do
+
+            SentryBar **watches and warns**. It reads the socket table with
+            `lsof` and `nettop`; it installs no system extension and never sits
+            in the path of your traffic. It therefore **cannot block a
+            connection**. If you want blocking, use a firewall such as LuLu —
+            the two compose well.
